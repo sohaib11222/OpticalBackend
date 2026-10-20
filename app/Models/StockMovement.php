@@ -1,0 +1,38 @@
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\BelongsToShop;
+use Illuminate\Database\Eloquent\Model;
+
+class StockMovement extends Model
+{
+    use BelongsToShop;
+
+    public $timestamps = false;
+
+    protected $guarded = ['id', 'shop_id'];
+
+    protected $hidden = ['request_key', 'request_hash'];
+
+    protected function casts(): array
+    {
+        return ['created_at' => 'datetime', 'quantity_delta' => 'integer', 'reserved_delta' => 'integer', 'on_hand_after' => 'integer', 'reserved_after' => 'integer'];
+    }
+
+    protected static function booted(): void
+    {
+        static::updating(fn () => throw new \LogicException('Stock history is immutable.'));
+        static::deleting(fn () => throw new \LogicException('Stock history must be retained.'));
+    }
+
+    public function actor()
+    {
+        return $this->belongsTo(User::class, 'actor_id');
+    }
+
+    public function reversal()
+    {
+        return $this->hasOne(self::class, 'reverses_id');
+    }
+}
