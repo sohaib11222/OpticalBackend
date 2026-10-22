@@ -133,7 +133,7 @@ return new class extends Migration
             $t->text('evidence');
             $t->foreignId('actor_id')->nullable()->constrained('users')->restrictOnDelete();
             $t->timestamp('recorded_at');
-            $t->unique(['shop_id', 'customer_id', 'channel', 'purpose']);
+            $t->unique(['shop_id', 'customer_id', 'channel', 'purpose'], 'consents_shop_customer_channel_purpose_uq');
         });
         Schema::create('consent_events', function (Blueprint $t) {
             $this->base($t);

@@ -56,7 +56,7 @@ return new class extends Migration
             $t->unsignedBigInteger('result_customer_id')->nullable();
             $t->text('result_error')->nullable();
             $t->timestamps();
-            $t->unique(['shop_id', 'customer_import_id', 'row_number']);
+            $t->unique(['shop_id', 'customer_import_id', 'row_number'], 'import_rows_shop_import_row_uq');
             $t->foreign(['shop_id', 'target_customer_id'])->references(['shop_id', 'id'])->on('customers')->restrictOnDelete();
             $t->foreign(['shop_id', 'result_customer_id'])->references(['shop_id', 'id'])->on('customers')->restrictOnDelete();
         });
