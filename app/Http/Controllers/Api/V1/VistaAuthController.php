@@ -69,7 +69,7 @@ class VistaAuthController extends Controller
                 if ($old) {
                     abort_unless($old->subject === $identity['subject'] && $old->store_id === $identity['store']['id'], 409, 'Vista identity changed. Contact an administrator.');
                     if ($flow['mode'] === 'connect') {
-                        abort_unless($old->shop_id === $flow['shop_id'] && $old->user_id === $flow['user_id'], 409, 'This seller is already connected to another Optical Shop account.');
+                        abort_unless($old->shop_id === $flow['shop_id'] && $old->user_id === $flow['user_id'], 409, 'This seller is already connected to another Vista Express 360 account.');
                     }
                     $u = User::findOrFail($old->user_id);
                     $shop = Shop::findOrFail($old->shop_id);
@@ -78,7 +78,7 @@ class VistaAuthController extends Controller
                     $shop = Shop::findOrFail($flow['shop_id']);
                     abort_if(VistaConnection::withoutGlobalScope('shop')->where('shop_id', $shop->id)->exists(), 409, 'This shop already has a different seller identity.');
                 } else {
-                    abort_if(User::where('email', strtolower($identity['email']))->exists(), 409, 'An Optical Shop account already uses this email. Sign in to that account and explicitly connect Vista Express.');
+                    abort_if(User::where('email', strtolower($identity['email']))->exists(), 409, 'An Vista Express 360 account already uses this email. Sign in to that account and explicitly connect Vista Express.');
                     $u = User::create(['name' => $identity['name'], 'email' => strtolower($identity['email']), 'password' => Str::random(100)]);
                     if ($identity['email_verified']) {
                         $u->forceFill(['email_verified_at' => now()])->save();
@@ -88,7 +88,7 @@ class VistaAuthController extends Controller
                 }
                 $u->refresh();
                 $m = $u->memberships()->with('shop', 'user', 'role.permissions')->where('shop_id', $shop->id)->where('status', 'active')->first();
-                abort_unless($u->status === 'active' && $u->account_type === 'shop' && $m && $m->can('integrations.write') && $shop->status === 'active', 403, 'Optical Shop access is unavailable.');
+                abort_unless($u->status === 'active' && $u->account_type === 'shop' && $m && $m->can('integrations.write') && $shop->status === 'active', 403, 'Vista Express 360 access is unavailable.');
                 $context->set($m);
                 $connection = $old ?? new VistaConnection;
                 $connection->fill(['provider' => $flow['provider'], 'subject' => $identity['subject'], 'store_id' => $identity['store']['id'], 'store_name' => $identity['store']['name'], 'user_id' => $u->id, 'access_token' => $validated['access_token'], 'expires_at' => $validated['expires_at'], 'status' => 'connected', 'last_error' => null]);

@@ -12,6 +12,6 @@ return [
     'aruba' => [
         'host' => env('ARUBA_SMTP_HOST', 'smtps.aruba.it'), 'port' => 465,
         'username' => env('ARUBA_SMTP_USERNAME'), 'password' => env('ARUBA_SMTP_PASSWORD'),
-        'from_address' => env('ARUBA_FROM_ADDRESS'), 'from_name' => env('ARUBA_FROM_NAME', 'Vista Express Business'),
+        'from_address' => env('ARUBA_FROM_ADDRESS'), 'from_name' => env('ARUBA_FROM_NAME', 'Vista Express 360'),
     ],
 ];

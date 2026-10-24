@@ -69,8 +69,8 @@ class CheckMail extends Command
         }
         try {
             Mail::mailer('smtp')->raw(
-                'Optical Shop CRM SMTP test. This diagnostic message does not verify an account. Request verification from the account page.',
-                fn (Message $message) => $message->to($recipient)->subject('Optical Shop CRM SMTP test'),
+                'Vista Express 360 CRM SMTP test. This diagnostic message does not verify an account. Request verification from the account page.',
+                fn (Message $message) => $message->to($recipient)->subject('Vista Express 360 CRM SMTP test'),
             );
         } catch (Throwable) {
             // SMTP exception transcripts can include credentials. Do not print or log them here.
