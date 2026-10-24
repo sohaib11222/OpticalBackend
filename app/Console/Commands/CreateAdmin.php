@@ -5,7 +5,6 @@ namespace App\Console\Commands;
 use App\Models\User;
 use App\Rules\PasswordByteLength;
 use App\Services\Audit;
-use App\Services\EmailVerification;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Password;
@@ -30,9 +29,8 @@ class CreateAdmin extends Command
         $u = new User($data);
         $u->account_type = 'admin';
         $u->save();
-        $u->sendEmailVerificationNotification();
         Audit::record('admin.provisioned', null, $u->id);
-        $this->info(EmailVerification::required() ? 'Administrator created. A verification email has been queued.' : 'Administrator created. Email verification is disabled for development.');
+        $this->info('Administrator created. You can sign in immediately; email verification is not required for platform administrators.');
 
         return self::SUCCESS;
     }

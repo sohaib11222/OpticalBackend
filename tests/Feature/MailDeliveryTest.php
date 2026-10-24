@@ -125,12 +125,12 @@ class MailDeliveryTest extends TestCase
             $user->sendEmailVerificationNotification();
             $user->sendPasswordResetNotification('synthetic-reset-token');
         }
-        $this->assertSame(4, DB::table('jobs')->count());
+        $this->assertSame(3, DB::table('jobs')->count()); // Shop verification + both password resets.
         $this->artisan('queue:work', ['connection' => 'database', '--stop-when-empty' => true, '--sleep' => 0, '--tries' => 1])
             ->assertSuccessful();
         $this->assertSame(0, DB::table('jobs')->count());
         $this->assertSame(0, DB::table('failed_jobs')->count());
-        $this->assertCount(4, Mail::mailer()->getSymfonyTransport()->messages());
+        $this->assertCount(3, Mail::mailer()->getSymfonyTransport()->messages());
     }
 
     public function test_queued_verification_and_reset_render_through_mail_for_both_panels(): void
@@ -142,7 +142,7 @@ class MailDeliveryTest extends TestCase
             $user->sendEmailVerificationNotification();
             $user->sendPasswordResetNotification('synthetic-reset-token');
         }
-        Queue::assertPushed(SendQueuedNotifications::class, 4);
+        Queue::assertPushed(SendQueuedNotifications::class, 3);
         $jobs = Queue::pushed(SendQueuedNotifications::class);
         foreach ($jobs as $entry) {
             // Exercise the real queued notification handler, renderer and mail channel; only transport is in memory.
@@ -165,7 +165,7 @@ class MailDeliveryTest extends TestCase
             $job->handle(app(ChannelManager::class));
         }
         $messages = Mail::mailer()->getSymfonyTransport()->messages();
-        $this->assertCount(4, $messages);
+        $this->assertCount(3, $messages);
         foreach ($messages as $sent) {
             $email = $sent->getOriginalMessage();
             $this->assertNotEmpty($email->getHtmlBody());

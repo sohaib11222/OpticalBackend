@@ -450,11 +450,45 @@ class FoundationTest extends TestCase
 
     public function test_admin_command_provisions_unverified_identity_without_public_signup(): void
     {
-        $this->artisan('optical:admin', ['email' => 'provision@example.test', '--name' => 'Provisioned'])->expectsQuestion('Password (at least 12 characters, letters and numbers)', self::PASS)->expectsOutput('Administrator created. A verification email has been queued.')->assertSuccessful();
+        $this->artisan('optical:admin', ['email' => 'provision@example.test', '--name' => 'Provisioned'])->expectsQuestion('Password (at least 12 characters, letters and numbers)', self::PASS)->expectsOutput('Administrator created. You can sign in immediately; email verification is not required for platform administrators.')->assertSuccessful();
         $u = User::where('email', 'provision@example.test')->firstOrFail();
         $this->assertSame('admin', $u->account_type);
         $this->assertFalse($u->hasVerifiedEmail());
-        Notification::assertSentTo($u, VerifyAccount::class);
+        Notification::assertNothingSent();
+        $this->loginUser($u);
+        $this->getJson('/api/v1/admin/shops')->assertOk();
+    }
+
+    public function test_unverified_admin_access_is_allowed_in_production_without_changing_shop_verification(): void
+    {
+        config(['optical.email_verification_required' => true]);
+        $admin = $this->admin();
+        $admin->forceFill(['email_verified_at' => null])->save();
+        $this->loginUser($admin);
+        $original = app()->environment();
+        try {
+            foreach (['production', 'staging'] as $environment) {
+                app()->instance('env', $environment);
+                $this->getJson('/api/v1/admin/auth/me')->assertOk()
+                    ->assertJsonPath('data.email_verified', false)
+                    ->assertJsonPath('data.email_verification_required', false);
+                $this->getJson('/api/v1/admin/shops')->assertOk();
+                $this->getJson('/api/v1/admin/operations')->assertOk();
+                $admin->sendEmailVerificationNotification();
+                Notification::assertNothingSent();
+                $this->assertNull($admin->fresh()->email_verified_at);
+            }
+        } finally {
+            app()->instance('env', $original);
+        }
+        $this->postJson('/api/v1/admin/auth/verification-notification')->assertOk()
+            ->assertJsonPath('message', 'Email verification is not required for platform administrators.');
+        Notification::assertNothingSent();
+        $shop = $this->owner('still-needs-verification@example.test', verified: false);
+        $this->loginUser($shop);
+        $this->getJson('/api/v1/auth/me')->assertJsonPath('data.email_verification_required', true);
+        $this->getJson('/api/v1/shop')->assertForbidden();
+        $this->getJson('/api/v1/admin/shops')->assertForbidden();
     }
 
     public function test_multibyte_password_cannot_silently_truncate_bcrypt_input(): void

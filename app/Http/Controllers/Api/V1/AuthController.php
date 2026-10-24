@@ -151,6 +151,9 @@ class AuthController extends Controller
 
     public function resend(Request $r)
     {
+        if ($r->user()->account_type === 'admin') {
+            return response()->json(['message' => 'Email verification is not required for platform administrators.']);
+        }
         if (! $r->user()->hasVerifiedEmail()) {
             $r->user()->sendEmailVerificationNotification();
         }

@@ -30,14 +30,14 @@ class User extends Authenticatable implements MustVerifyEmail
 
     public function sendEmailVerificationNotification()
     {
-        if (EmailVerification::required()) {
+        if (EmailVerification::required($this)) {
             $this->notify(new VerifyAccount);
         }
     }
 
     public function canUseVerifiedFeatures(): bool
     {
-        return $this->hasVerifiedEmail() || ! EmailVerification::required();
+        return $this->hasVerifiedEmail() || ! EmailVerification::required($this);
     }
 
     public function sendPasswordResetNotification($token)
