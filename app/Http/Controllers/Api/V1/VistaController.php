@@ -70,7 +70,8 @@ class VistaController extends Controller
             app(ScheduleVistaSync::class)->dispatch($connection);
         }
 
-        return ['data' => ['enabled' => (bool) config('vista.enabled'), 'connection' => VistaConnection::first(), 'stock_policy' => 'allocated', 'source' => 'vista_express']];
+        return ['data' => ['enabled' => (bool) config('vista.enabled'), 'connection' => VistaConnection::first(), 'stock_policy' => 'allocated', 'source' => 'vista_express',
+            'processing' => ['worker_active' => \App\Services\QueueHealth::active('integrations')]]];
     }
 
     public function metadata(VistaClient $client)

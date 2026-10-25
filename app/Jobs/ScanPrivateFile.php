@@ -38,6 +38,13 @@ class ScanPrivateFile implements ShouldQueue
         return [30, 120, 600];
     }
 
+    public function failed(?\Throwable $error): void
+    {
+        PrivateFile::withoutGlobalScope('shop')->where('shop_id', $this->shopId)->whereKey($this->fileId)
+            ->whereNull('archived_at')->where('scan_status', 'pending')
+            ->update(['scan_status' => 'failed', 'scan_error' => 'processing_interrupted']);
+    }
+
     public function handle(FileScanner $scanner): void
     {
         abort_unless(app(TenantContext::class)->membership()->can('files.write'), 403);

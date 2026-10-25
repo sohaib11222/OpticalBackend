@@ -32,6 +32,19 @@ class DocumentWorkflowTest extends TestCase
         $this->login($this->owner);
     }
 
+    public function test_interrupted_scan_marks_failed_without_touching_other_tenants_or_clean_files(): void
+    {
+        $file = $this->upload()->assertStatus(202)->json('data');
+        $shop = $this->owner->memberships()->first()->shop_id;
+        (new ScanPrivateFile($shop + 999, $this->owner->id, $file['id']))->failed(new \RuntimeException('timeout'));
+        $this->getJson('/api/v1/documents/'.$file['id'])->assertJsonPath('data.scan_status', 'pending');
+        (new ScanPrivateFile($shop, $this->owner->id, $file['id']))->failed(new \RuntimeException('timeout'));
+        $this->getJson('/api/v1/documents/'.$file['id'])->assertJsonPath('data.scan_status', 'failed');
+        $this->scan($file['id']);
+        (new ScanPrivateFile($shop, $this->owner->id, $file['id']))->failed(new \RuntimeException('late failure'));
+        $this->getJson('/api/v1/documents/'.$file['id'])->assertJsonPath('data.scan_status', 'clean');
+    }
+
     private function owner(string $email): User
     {
         $u = User::factory()->create(['email' => $email, 'password' => 'TestingPassword123!']);

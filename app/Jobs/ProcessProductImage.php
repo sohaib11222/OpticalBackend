@@ -41,6 +41,13 @@ class ProcessProductImage implements ShouldQueue
         return [30, 120, 300];
     }
 
+    public function failed(?\Throwable $error): void
+    {
+        ProductImage::withoutGlobalScope('shop')->where('shop_id', $this->shopId)->whereKey($this->imageId)
+            ->whereNull('archived_at')->where('scan_status', 'pending')
+            ->update(['scan_status' => 'failed', 'scan_error' => 'processing_interrupted']);
+    }
+
     public function handle(FileScanner $scanner): void
     {
         abort_unless(app(TenantContext::class)->membership()->can('products.write'), 403);

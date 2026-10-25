@@ -31,7 +31,7 @@ class AppServiceProvider extends ServiceProvider
     {
         Queue::looping(function (Looping $event) {
             foreach (explode(',', $event->queue ?? 'default') as $queue) {
-                Cache::put('optical:worker-heartbeat:'.$event->connectionName.':'.$queue, time(), 120);
+                Cache::put('optical:worker-heartbeat:'.$event->connectionName.':'.trim($queue), time(), 420);
             }
         });
         // This first-party phase deliberately accepts sessions only, never bearer tokens.

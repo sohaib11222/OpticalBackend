@@ -37,6 +37,13 @@ class ProcessCustomerImport implements ShouldQueue
         return [30, 120, 300];
     }
 
+    public function failed(?\Throwable $error): void
+    {
+        CustomerImport::withoutGlobalScope('shop')->where('shop_id', $this->shopId)->whereKey($this->importId)
+            ->where('version', $this->version)->whereIn('status', ['parsing', 'previewing', 'committing'])
+            ->update(['status' => 'failed', 'last_error' => 'Processing was interrupted. Check worker availability and account permissions, then retry.']);
+    }
+
     public function handle(CustomerImports $service): void
     {
         abort_unless(app(TenantContext::class)->membership()->can('imports.write') && app(TenantContext::class)->membership()->can('customers.write'), 403);
