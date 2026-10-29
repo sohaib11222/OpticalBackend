@@ -46,7 +46,7 @@ class CheckProcessing extends Command
         }
         foreach (['uploads', 'integrations', 'communications', 'default'] as $queue) {
             $active = QueueHealth::active($queue);
-            $required = in_array($queue, ['uploads', 'default']) || ($queue === 'integrations' && config('vista.enabled')) || ($queue === 'communications' && config('communications.enabled'));
+            $required = in_array($queue, ['uploads', 'default']) || ($queue === 'integrations' && config('vista.enabled')) || ($queue === 'communications' && (config('communications.enabled') || config('communications.email_enabled')));
             if (! $active && $required) { $ok = false; }
             $this->line($queue.': '.($active ? 'consumer heartbeat OK' : 'no recent consumer heartbeat'));
         }

@@ -1,5 +1,7 @@
 # Customer messaging and seller authorization — 28 October 2026
 
+Latest release: [29 October email configuration, message wizard and dedicated Vista pages](communication-and-vista-pages-2026-10-29.md). Follow that guide for the current release. Email/SMS now use channel → timing → recipients → content → review; WhatsApp retains its existing composer.
+
 ## What changed
 - Customer tables and saved-customer details in Shop and scoped Admin workspaces offer SMS, WhatsApp and Email actions. WhatsApp opens the existing approved-template composer; no external chat links or bulk WhatsApp were added.
 - Select up to 100 active customers across list pages, choose Bulk SMS or Bulk email, enter content and an optional delay, then review recipients. Resolve invalid contact details, explicit opt-outs or duplicate destinations before confirming. No recipient is queued until the entire selection passes validation.
@@ -8,10 +10,11 @@
 - Vista seller authorization now receives the selected language from 360, offers English/Italian navigation, and has a responsive editorial layout. Switching language preserves PKCE/state and the original expiry. Existing seller sessions remain untouched.
 
 ## Configuration (360 backend only)
-Keep `COMMUNICATIONS_ENABLED=false` until credentials and controlled tests are ready. Add values on the server, never commit them:
+Keep `COMMUNICATIONS_ENABLED=false` if SMS/WhatsApp should remain disabled. Enable only customer email with `COMMUNICATIONS_EMAIL_ENABLED=true` after configuring Aruba. Omitting the override preserves the global flag. Refresh configuration and restart the 360 workers after any change. Add values on the server, never commit them:
 
 ```dotenv
 COMMUNICATIONS_ENABLED=false
+COMMUNICATIONS_EMAIL_ENABLED=true
 COMMUNICATIONS_PUBLIC_URL=https://api.vistaexpressbusiness.com
 COMMUNICATIONS_PER_MINUTE=30
 TWILIO_ACCOUNT_SID=
@@ -36,14 +39,14 @@ Workers must consume `communications` as well as the existing queues. Configure 
 * * * * * cd /var/www/vistaexpressbusiness/backend && /usr/bin/php artisan schedule:run >> /dev/null 2>&1
 ```
 
-Run this as the application OS user. After changing environment configuration, run `php artisan config:cache` and restart only the 360 Supervisor worker group. Check `php artisan optical:check-processing`.
+Run this as the application OS user. After changing environment configuration, run `php artisan config:cache` and restart only the 360 Supervisor worker group. Check `php artisan optical:check-processing` and `php artisan optical:check-messaging --smtp`; the latter authenticates securely without sending. Immediate messages need the worker; future messages, automatic retries and reminders also need the scheduler.
 
 ## Deployment
 1. Back up the database using the normal deployment process. Pull the 360 backend, frontend, Admin and shared contracts repositories.
 2. In the 360 backend run `php artisan migrate --force` (adds communication_batches), then refresh configuration and restart 360 workers.
 3. Build both portals and run the existing `backend/deploy/publish-static.mjs` release helper for each portal; Nginx serves `www`, not `dist`. Preserve the production root base `/`.
 4. Pull the original Vista marketplace backend too: the seller authorization controller/view, CSS and image live there. Run `php artisan view:clear` in that backend. No marketplace database migration is introduced by this change.
-5. Set credentials, enable communications, refresh config and restart workers only when ready for a controlled delivery test. This development change does not send real messages.
+5. Set credentials, enable the intended channels (email-only override or the global flag), refresh config and restart workers when ready for a controlled delivery test. This development change does not send real messages. The 29 October email/page update adds no further migration.
 
 ## Acceptance checklist
 - Shop and scoped Admin: select two customers with different valid destinations; no consent entry is required. Bulk SMS: review two eligible rows, confirm, verify two separate personalized history entries.

@@ -50,7 +50,7 @@ class CommunicationController extends Controller
     {
         Access::require('communications.read');
 
-        return ['data' => ['sms' => $provider->ready('sms'), 'whatsapp' => $provider->ready('whatsapp'), 'email' => $provider->ready('email'), 'variables' => Messages::VARIABLES, 'processing' => OperationsHealth::status()]];
+        return ['data' => ['sms' => $provider->ready('sms'), 'whatsapp' => $provider->ready('whatsapp'), 'email' => $provider->ready('email'), 'email_issues' => $provider->emailIssues(), 'variables' => Messages::VARIABLES, 'processing' => OperationsHealth::status()]];
     }
 
     public function templates()

@@ -9,6 +9,7 @@ $overrides = [
     'APP_EVENTS_CACHE' => __DIR__.'/../storage/framework/unit-test-events.php',
     'CACHE_STORE' => 'array', 'SESSION_DRIVER' => 'array', 'QUEUE_CONNECTION' => 'sync', 'MAIL_MAILER' => 'array',
     'COMMUNICATIONS_ENABLED' => 'false',
+    'COMMUNICATIONS_EMAIL_ENABLED' => 'null',
 ];
 foreach (['APP_CONFIG_CACHE', 'APP_ROUTES_CACHE', 'APP_EVENTS_CACHE'] as $key) {
     if (is_file($overrides[$key])) {

@@ -45,7 +45,7 @@ class SendCustomerMessage implements ShouldQueue
                         return null;
                     }
                     if (! $provider->ready($m->channel)) {
-                        $m->forceFill(['status' => 'blocked', 'error_code' => 'provider_not_ready', 'error_message' => 'Platform messaging is disabled or missing credentials.', 'next_attempt_at' => now()->addMinutes(5)])->save();
+                        $m->forceFill(['status' => 'blocked', 'error_code' => 'provider_not_ready', 'error_message' => $m->channel === 'email' ? implode(' ', $provider->emailIssues()) : 'Platform SMS/WhatsApp messaging is disabled or missing credentials.', 'next_attempt_at' => now()->addMinutes(5)])->save();
 
                         return null;
                     }

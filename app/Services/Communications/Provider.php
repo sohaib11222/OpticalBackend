@@ -15,17 +15,40 @@ class Provider
 {
     public function ready(string $channel): bool
     {
-        if (! in_array($channel, ['sms', 'whatsapp', 'email'], true) || ! config('communications.enabled')) {
-            return false;
-        }
-        if ($channel === 'email') {
-            return (bool) (config('communications.aruba.username') && config('communications.aruba.password') && filter_var(config('communications.aruba.from_address'), FILTER_VALIDATE_EMAIL) && str_starts_with(config('communications.public_url', ''), 'https://') && in_array(config('communications.aruba.host'), ['smtps.aruba.it', 'smtp.aruba.it']) && in_array((int) config('communications.aruba.port'), [465, 587], true));
-        }
+        if ($channel === 'email') return $this->emailIssues() === [];
+        if (! in_array($channel, ['sms', 'whatsapp'], true) || ! config('communications.enabled')) return false;
 
         $service = preg_match('/^MG[0-9a-f]{32}$/i', config('communications.twilio.messaging_service_sid', '') ?? '');
         $sender = preg_match('/^\+[1-9][0-9]{7,14}$/D', config('communications.twilio.sms_from', '') ?? '');
         if ($channel === 'sms' && config('communications.twilio.messaging_service_sid') && ! $service) return false;
         return (bool) (preg_match('/^AC[0-9a-f]{32}$/i', config('communications.twilio.account_sid', '') ?? '') && config('communications.twilio.auth_token') && ($channel === 'sms' ? ($service || $sender) : ($service && config('communications.twilio.whatsapp_from'))) && str_starts_with(config('communications.public_url', ''), 'https://'));
+    }
+
+    /** Safe diagnostics: names of missing settings, never credential values. */
+    public function emailIssues(): array
+    {
+        $issues = [];
+        if (! (config('communications.email_enabled') ?? config('communications.enabled'))) $issues[] = 'Enable COMMUNICATIONS_EMAIL_ENABLED=true (or COMMUNICATIONS_ENABLED=true).';
+        foreach (['username' => 'ARUBA_SMTP_USERNAME', 'password' => 'ARUBA_SMTP_PASSWORD'] as $key => $env) {
+            if (! config('communications.aruba.'.$key)) $issues[] = 'Missing '.$env.'.';
+        }
+        if (! filter_var(config('communications.aruba.from_address'), FILTER_VALIDATE_EMAIL)) $issues[] = 'Set a valid ARUBA_FROM_ADDRESS.';
+        if (! in_array(config('communications.aruba.host'), ['smtps.aruba.it', 'smtp.aruba.it'], true)) $issues[] = 'ARUBA_SMTP_HOST must be smtps.aruba.it or smtp.aruba.it.';
+        if (! in_array((int) config('communications.aruba.port'), [465, 587], true)) $issues[] = 'ARUBA_SMTP_PORT must be 465 (TLS) or 587 (STARTTLS).';
+        $url = config('communications.public_url', '');
+        if (! filter_var($url, FILTER_VALIDATE_URL) || parse_url($url, PHP_URL_SCHEME) !== 'https') $issues[] = 'Set COMMUNICATIONS_PUBLIC_URL to the public HTTPS API URL for unsubscribe links.';
+        return $issues;
+    }
+
+    public function emailTransport(): EsmtpTransport
+    {
+        $settings = config('communications.aruba');
+        $transport = new EsmtpTransport($settings['host'], (int) $settings['port'], (int) $settings['port'] === 465);
+        $transport->setRequireTls(true);
+        $transport->setUsername($settings['username']);
+        $transport->setPassword($settings['password']);
+        $transport->getStream()->setTimeout(20);
+        return $transport;
     }
 
     public function callback(string $uuid): string
@@ -36,15 +59,11 @@ class Provider
     public function send(CustomerMessage $m): array
     {
         if (! $this->ready($m->channel)) {
-            throw new DeliveryFailure('blocked', 'provider_not_ready', 'Platform messaging is disabled or missing provider credentials.');
+            throw new DeliveryFailure('blocked', 'provider_not_ready', $m->channel === 'email' ? implode(' ', $this->emailIssues()) : 'Platform messaging is disabled or missing provider credentials.');
         }
         if ($m->channel === 'email') {
             $settings = config('communications.aruba');
-            $transport = new EsmtpTransport($settings['host'], (int) $settings['port'], (int) $settings['port'] === 465);
-            $transport->setRequireTls(true);
-            $transport->setUsername($settings['username']);
-            $transport->setPassword($settings['password']);
-            $transport->getStream()->setTimeout(20);
+            $transport = $this->emailTransport();
             $email = (new Email)->from(new Address($settings['from_address'], Shop::findOrFail($m->shop_id)->name.' / '.$settings['from_name']))->to($m->recipient)->subject($m->subject)->text($m->body."\n\nUnsubscribe / Disiscriviti: ".config('communications.public_url').'/api/v1/communications/preferences/'.$m->public_id.'/'.hash_hmac('sha256', 'unsubscribe:'.$m->public_id, config('app.key')));
             $email->getHeaders()->addIdHeader('Message-ID', $m->public_id.'@'.explode('@', $settings['from_address'])[1]);
             try {
