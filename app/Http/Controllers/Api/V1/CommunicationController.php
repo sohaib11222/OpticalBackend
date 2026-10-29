@@ -163,7 +163,7 @@ class CommunicationController extends Controller
             } else {
                 // Failed/undelivered provider IDs may represent partial delivery; never recycle them.
                 abort_unless(in_array($m->status, ['blocked', 'retry_wait']) || ($m->status === 'failed' && ! $m->provider_id), 409, 'This message cannot be safely retried. Reconcile with the provider and create a reviewed new message if needed.');
-                abort_if($messages->eligible($m), 422, 'Consent, recipient, source or permissions no longer allow sending.');
+                abort_if($messages->eligible($m), 422, 'Recipient opt-outs, source or permissions no longer allow sending.');
                 $m->status = 'scheduled';
                 $m->next_attempt_at = null;
                 $m->attempts = 0;
@@ -172,6 +172,7 @@ class CommunicationController extends Controller
             $m->save();
             $messages->event($m, $m->status, 'manual_'.$action, $d['reason'], $r->user()->id);
             Audit::record('message.'.$action, $m->shop_id, $r->user()->id, 'message', $id);
+            if ($action === 'retry') $messages->dispatchIfDue($m);
 
             return ['data' => $m];
         });

@@ -2,6 +2,7 @@
 
 namespace App\Services\Communications;
 
+use App\Jobs\SendCustomerMessage;
 use App\Models\CommunicationConsent;
 use App\Models\Customer;
 use App\Models\CustomerMessage;
@@ -80,9 +81,18 @@ class Messages
             $m = CustomerMessage::create(['customer_id' => $c->id, 'public_id' => (string) Str::uuid(), 'dedupe_key' => $key, 'request_hash' => $hash, 'channel' => $channel, 'purpose' => $purpose, 'recipient' => $recipient, 'subject' => $subject, 'body' => $body, 'content_sid' => $template?->content_sid, 'content_variables' => $content, 'template_id' => $template?->id, 'reminder_id' => $reminder?->id, 'scheduled_at' => $scheduled, 'created_by' => $actor]);
             $this->event($m, 'scheduled');
             Audit::record('message.scheduled', $shop->id, $actor, 'message', $m->id);
+            $this->dispatchIfDue($m->refresh());
 
             return $m->refresh();
         }, 3);
+    }
+
+    public function dispatchIfDue(CustomerMessage $m): void
+    {
+        if (in_array($m->status, self::PENDING, true) && ! $m->scheduled_at->isFuture() && ! $m->next_attempt_at?->isFuture()) {
+            // Only publish after the whole transaction (including a bulk batch) commits.
+            SendCustomerMessage::dispatch($m->shop_id, $m->created_by, $m->id)->afterCommit();
+        }
     }
 
     public function eligible(CustomerMessage $m): ?string

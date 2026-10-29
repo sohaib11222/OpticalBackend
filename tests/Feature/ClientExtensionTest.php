@@ -59,6 +59,19 @@ class ClientExtensionTest extends TestCase
         return (new WithTenant($this->membership->shop_id, $this->owner->id))->handle(new \stdClass, $fn);
     }
 
+    public function test_send_now_dispatches_without_scheduler_and_future_sends_wait(): void
+    {
+        foreach (['email', 'sms'] as $channel) {
+            $d = ['customer_id' => $this->customer, 'channel' => $channel, 'purpose' => 'service', 'subject' => 'Immediate test', 'body' => 'Hello', 'creation_key' => (string) Str::uuid()];
+            $id = $this->postJson('/api/v1/communications/messages', $d)->assertCreated()->json('data.id');
+            Queue::assertPushed(SendCustomerMessage::class, fn ($job) => $job->messageId === $id && $job->queue === 'communications' && $job->afterCommit === true);
+            $this->postJson('/api/v1/communications/messages', $d)->assertCreated();
+            $future = $this->postJson('/api/v1/communications/messages', [...$d, 'creation_key' => (string) Str::uuid(), 'delay_minutes' => 15])->assertCreated()->json('data.id');
+            Queue::assertNotPushed(SendCustomerMessage::class, fn ($job) => $job->messageId === $future);
+        }
+        Queue::assertPushed(SendCustomerMessage::class, 2);
+    }
+
     public function test_manual_email_and_sms_for_each_purpose_need_no_consent_entry(): void
     {
         foreach (['email', 'sms'] as $channel) {
