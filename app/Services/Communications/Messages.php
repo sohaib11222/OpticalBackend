@@ -35,10 +35,11 @@ class Messages
         return hash_hmac('sha256', strtolower($recipient), config('app.key'));
     }
 
-    public function consent(Customer $c, string $channel, string $purpose, string $recipient): bool
+    public function recipientAllowed(Customer $c, string $channel, string $purpose, string $recipient): bool
     {
         return ! DB::table('messaging_suppressions')->where('channel', $channel)->where('recipient_hash', self::recipientHash($recipient))->exists()
-            && CommunicationConsent::where('customer_id', $c->id)->where('channel', $channel)->where('purpose', $purpose)->where('granted', true)->where('recipient_hash', self::recipientHash($recipient))->exists();
+            // No opt-in record is required. Preserve explicit withdrawals and provider opt-outs.
+            && ! CommunicationConsent::where('customer_id', $c->id)->where('channel', $channel)->where('purpose', $purpose)->where('granted', false)->where('recipient_hash', self::recipientHash($recipient))->exists();
     }
 
     public function queue(array $d, int $actor, ?Reminder $reminder = null, ?string $dedupe = null): CustomerMessage
@@ -59,7 +60,7 @@ class Messages
             $purpose = $template?->purpose ?? $d['purpose'];
             abort_if($channel === 'whatsapp' && ! $template?->content_sid, 422, 'WhatsApp requires an approved provider template.');
             $recipient = self::recipient($c, $channel);
-            abort_unless($this->consent($c, $channel, $purpose, $recipient), 422, 'Recorded consent for this channel, purpose and contact address is required.');
+            abort_unless($this->recipientAllowed($c, $channel, $purpose, $recipient), 422, 'This recipient has opted out of these messages.');
             $variables = ['first_name' => $c->first_name, 'last_name' => $c->last_name, 'shop_name' => $shop->name, 'due_date' => $reminder?->due_on?->toDateString() ?? '', 'reference' => $reminder?->order?->number ?? ''];
             $render = function (string $text) use ($variables) {
                 return preg_replace_callback('/\{\{\s*([^{}]*?)\s*\}\}/', function ($m) use ($variables) {
@@ -101,8 +102,8 @@ class Messages
         if ($current !== $m->recipient) {
             return 'recipient_changed';
         }
-        if (! $this->consent($c, $m->channel, $m->purpose, $m->recipient)) {
-            return 'consent_missing';
+        if (! $this->recipientAllowed($c, $m->channel, $m->purpose, $m->recipient)) {
+            return 'recipient_opted_out';
         }
         if ($m->template_id && ! MessageTemplate::whereKey($m->template_id)->where('active', true)->exists()) {
             return 'template_inactive';

@@ -59,14 +59,24 @@ class ClientExtensionTest extends TestCase
         return (new WithTenant($this->membership->shop_id, $this->owner->id))->handle(new \stdClass, $fn);
     }
 
+    public function test_manual_email_and_sms_for_each_purpose_need_no_consent_entry(): void
+    {
+        foreach (['email', 'sms'] as $channel) {
+            foreach (['service', 'marketing'] as $purpose) {
+                $this->postJson('/api/v1/communications/messages', ['customer_id' => $this->customer, 'channel' => $channel, 'purpose' => $purpose, 'subject' => 'Test update', 'body' => 'Hello {{first_name}}', 'creation_key' => (string) Str::uuid()])->assertCreated()->assertJsonPath('data.status', 'scheduled');
+            }
+        }
+        $this->assertDatabaseCount('customer_messages', 4);
+        $this->assertDatabaseCount('communication_consents', 0);
+        $this->assertDatabaseCount('consent_events', 0);
+        Http::assertNothingSent();
+    }
+
     public function test_bulk_messages_are_atomic_personalized_and_idempotent(): void
     {
         $second = $this->postJson('/api/v1/customers', ['first_name' => 'Second', 'last_name' => 'Person', 'email' => 'second@example.test', 'phone' => '+393331234568', 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
         foreach (['sms', 'email'] as $channel) {
             $payload = ['customer_ids' => [$this->customer, $second], 'channel' => $channel, 'purpose' => 'service', 'subject' => 'Hello {{first_name}}', 'body' => 'Welcome {{first_name}}', 'creation_key' => (string) Str::uuid()];
-            $this->postJson('/api/v1/communications/bulk/preview', $payload)->assertOk()->assertJsonPath('data.eligible', 0);
-            $this->postJson('/api/v1/communications/bulk', $payload)->assertUnprocessable();
-            foreach ($payload['customer_ids'] as $id) $this->postJson('/api/v1/customers/'.$id.'/consents', ['channel' => $channel, 'purpose' => 'service', 'granted' => true, 'evidence' => 'Customer requested service updates'])->assertOk();
             $this->postJson('/api/v1/communications/bulk/preview', $payload)->assertOk()->assertJsonPath('data.eligible', 2);
             $batch = $this->postJson('/api/v1/communications/bulk', $payload)->assertCreated()->assertJsonCount(2, 'messages')->json('data');
             $this->postJson('/api/v1/communications/bulk', $payload)->assertCreated()->assertJsonPath('data.id', $batch['id']);
@@ -78,14 +88,13 @@ class ClientExtensionTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_bulk_cannot_message_foreign_customers_or_whatsapp_or_unconsented_recipients(): void
+    public function test_bulk_rejects_foreign_customers_whatsapp_and_duplicate_ids(): void
     {
         $p = ['customer_ids' => [$this->customer, 999999], 'channel' => 'sms', 'purpose' => 'service', 'body' => 'Hello', 'creation_key' => (string) Str::uuid()];
         $this->postJson('/api/v1/communications/bulk/preview', $p)->assertNotFound();
         $this->postJson('/api/v1/communications/bulk', $p)->assertNotFound();
         $this->postJson('/api/v1/communications/bulk', [...$p, 'channel' => 'whatsapp'])->assertUnprocessable();
         $this->postJson('/api/v1/communications/bulk', [...$p, 'customer_ids' => [$this->customer, $this->customer]])->assertUnprocessable();
-        $this->postJson('/api/v1/communications/bulk', [...$p, 'customer_ids' => [$this->customer]])->assertUnprocessable();
         $this->assertDatabaseCount('customer_messages', 0);
         $this->assertDatabaseCount('communication_batches', 0);
     }
@@ -160,11 +169,9 @@ class ClientExtensionTest extends TestCase
         $this->getJson('/api/v1/activity')->assertOk();
     }
 
-    public function test_messages_require_consent_and_remain_blocked_without_platform_credentials(): void
+    public function test_messages_need_no_opt_in_but_remain_blocked_without_credentials_and_respect_withdrawal(): void
     {
         $m = ['customer_id' => $this->customer, 'channel' => 'sms', 'purpose' => 'service', 'body' => 'Hello {{first_name}}', 'creation_key' => (string) Str::uuid()];
-        $this->postJson('/api/v1/communications/messages', $m)->assertUnprocessable();
-        $this->postJson('/api/v1/customers/'.$this->customer.'/consents', ['channel' => 'sms', 'purpose' => 'service', 'granted' => true, 'evidence' => 'Customer signed the service messaging form'])->assertOk();
         $row = $this->postJson('/api/v1/communications/messages', $m)->assertCreated()->json('data');
         $this->postJson('/api/v1/communications/messages', $m)->assertCreated()->assertJsonPath('data.id', $row['id']);
         app()->call([new SendCustomerMessage($this->membership->shop_id, $this->owner->id, $row['id']), 'handle']);
@@ -234,9 +241,8 @@ class ClientExtensionTest extends TestCase
         $this->postJson('/api/v1/followup-rules', $data)->assertOk()->assertJsonPath('data.id', $rule['id']);
         $this->artisan('optical:run-operations')->assertSuccessful();
         $this->assertDatabaseCount('reminders', 1);
-        $this->assertDatabaseCount('customer_messages', 0);
-        $this->assertDatabaseHas('reminders', ['rule_id' => $rule['id'], 'automation_error' => 'check_consent_contact_template_or_sender']);
-        $this->postJson('/api/v1/customers/'.$this->customer.'/consents', ['channel' => 'sms', 'purpose' => 'service', 'granted' => true, 'evidence' => 'Recorded service consent'])->assertOk();
+        $this->assertDatabaseCount('customer_messages', 1);
+        $this->assertDatabaseHas('reminders', ['rule_id' => $rule['id'], 'automation_error' => null]);
         $this->artisan('optical:run-operations')->assertSuccessful();
         $this->artisan('optical:run-operations')->assertSuccessful();
         $this->assertDatabaseCount('reminders', 1);

@@ -39,7 +39,7 @@ class SendCustomerMessage implements ShouldQueue
                         return null;
                     }
                     if ($reason = $messages->eligible($m)) {
-                        $m->forceFill(['status' => 'cancelled', 'error_code' => $reason, 'error_message' => 'Sending is no longer authorized. Review customer consent and source records.'])->save();
+                        $m->forceFill(['status' => 'cancelled', 'error_code' => $reason, 'error_message' => 'Sending is no longer authorized. Review recipient opt-outs and source records.'])->save();
                         $messages->event($m, 'cancelled', $reason);
 
                         return null;

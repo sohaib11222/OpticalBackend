@@ -25,7 +25,7 @@ class BulkMessages
             $recipient = null;
             try { $recipient = Messages::recipient($c, $d['channel']); }
             catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) { $reason ??= 'invalid_recipient'; }
-            if ($recipient && ! $messages->consent($c, $d['channel'], $d['purpose'], $recipient)) $reason ??= 'consent_missing';
+            if ($recipient && ! $messages->recipientAllowed($c, $d['channel'], $d['purpose'], $recipient)) $reason ??= 'recipient_opted_out';
             if ($recipient && isset($seen[$recipient])) $reason ??= 'duplicate_recipient';
             if ($recipient) $seen[$recipient] = true;
             $rows[] = ['customer_id' => $id, 'name' => $c->first_name.' '.$c->last_name, 'recipient' => $recipient, 'eligible' => $reason === null, 'reason' => $reason];
