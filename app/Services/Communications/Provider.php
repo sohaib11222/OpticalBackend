@@ -15,14 +15,17 @@ class Provider
 {
     public function ready(string $channel): bool
     {
-        if (! config('communications.enabled')) {
+        if (! in_array($channel, ['sms', 'whatsapp', 'email'], true) || ! config('communications.enabled')) {
             return false;
         }
         if ($channel === 'email') {
-            return (bool) (config('communications.aruba.username') && config('communications.aruba.password') && filter_var(config('communications.aruba.from_address'), FILTER_VALIDATE_EMAIL) && str_starts_with(config('communications.public_url', ''), 'https://') && in_array(config('communications.aruba.host'), ['smtps.aruba.it', 'smtp.aruba.it']));
+            return (bool) (config('communications.aruba.username') && config('communications.aruba.password') && filter_var(config('communications.aruba.from_address'), FILTER_VALIDATE_EMAIL) && str_starts_with(config('communications.public_url', ''), 'https://') && in_array(config('communications.aruba.host'), ['smtps.aruba.it', 'smtp.aruba.it']) && in_array((int) config('communications.aruba.port'), [465, 587], true));
         }
 
-        return (bool) (preg_match('/^AC[0-9a-f]{32}$/i', config('communications.twilio.account_sid', '') ?? '') && config('communications.twilio.auth_token') && preg_match('/^MG[0-9a-f]{32}$/i', config('communications.twilio.messaging_service_sid', '') ?? '') && ($channel !== 'whatsapp' || config('communications.twilio.whatsapp_from')) && str_starts_with(config('communications.public_url', ''), 'https://'));
+        $service = preg_match('/^MG[0-9a-f]{32}$/i', config('communications.twilio.messaging_service_sid', '') ?? '');
+        $sender = preg_match('/^\+[1-9][0-9]{7,14}$/D', config('communications.twilio.sms_from', '') ?? '');
+        if ($channel === 'sms' && config('communications.twilio.messaging_service_sid') && ! $service) return false;
+        return (bool) (preg_match('/^AC[0-9a-f]{32}$/i', config('communications.twilio.account_sid', '') ?? '') && config('communications.twilio.auth_token') && ($channel === 'sms' ? ($service || $sender) : ($service && config('communications.twilio.whatsapp_from'))) && str_starts_with(config('communications.public_url', ''), 'https://'));
     }
 
     public function callback(string $uuid): string
@@ -37,21 +40,23 @@ class Provider
         }
         if ($m->channel === 'email') {
             $settings = config('communications.aruba');
-            $transport = new EsmtpTransport($settings['host'], 465, true);
+            $transport = new EsmtpTransport($settings['host'], (int) $settings['port'], (int) $settings['port'] === 465);
+            $transport->setRequireTls(true);
             $transport->setUsername($settings['username']);
             $transport->setPassword($settings['password']);
             $transport->getStream()->setTimeout(20);
             $email = (new Email)->from(new Address($settings['from_address'], Shop::findOrFail($m->shop_id)->name.' / '.$settings['from_name']))->to($m->recipient)->subject($m->subject)->text($m->body."\n\nUnsubscribe / Disiscriviti: ".config('communications.public_url').'/api/v1/communications/preferences/'.$m->public_id.'/'.hash_hmac('sha256', 'unsubscribe:'.$m->public_id, config('app.key')));
             $email->getHeaders()->addIdHeader('Message-ID', $m->public_id.'@'.explode('@', $settings['from_address'])[1]);
             try {
-                (new Mailer($transport))->send($email);
+                $this->deliverEmail($email, $transport);
             } catch (\Throwable $e) {
                 throw new DeliveryFailure('uncertain', 'smtp_submission_unknown', 'Email submission could not be confirmed. Check the mailbox/provider before trying again.');
             }
 
             return ['status' => 'accepted', 'provider_id' => 'smtp:'.$m->public_id];
         }
-        $data = ['To' => ($m->channel === 'whatsapp' ? 'whatsapp:' : '').$m->recipient, 'MessagingServiceSid' => config('communications.twilio.messaging_service_sid'), 'StatusCallback' => $this->callback($m->public_id)];
+        $data = ['To' => ($m->channel === 'whatsapp' ? 'whatsapp:' : '').$m->recipient, 'StatusCallback' => $this->callback($m->public_id)];
+        if (config('communications.twilio.messaging_service_sid')) $data['MessagingServiceSid'] = config('communications.twilio.messaging_service_sid');
         if ($m->channel === 'whatsapp') {
             $data += ['From' => config('communications.twilio.whatsapp_from'), 'ContentSid' => $m->content_sid, 'ContentVariables' => json_encode((object) $m->content_variables)];
         } else {
@@ -99,6 +104,10 @@ class Provider
         }
     }
 
+    protected function deliverEmail(Email $email, EsmtpTransport $transport): void
+    {
+        (new Mailer($transport))->send($email);
+    }
     private function base(): string
     {
         return 'https://api.twilio.com/2010-04-01/Accounts/'.config('communications.twilio.account_sid');

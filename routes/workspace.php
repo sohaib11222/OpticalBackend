@@ -129,6 +129,8 @@ Route::get('communications/templates', [\App\Http\Controllers\Api\V1\Communicati
 Route::post('communications/templates', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'saveTemplate']);
 Route::patch('communications/templates/{id}', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'saveTemplate'])->whereNumber('id');
 Route::get('communications/messages', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'index']);
+Route::post('communications/bulk/preview', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'bulkPreview'])->middleware('throttle:60,1,communications-bulk-preview');
+Route::post('communications/bulk', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'bulkSend'])->middleware('throttle:10,1,communications-bulk-send');
 Route::post('communications/messages', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'send'])->middleware('throttle:60,1');
 Route::get('communications/messages/{id}', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'show'])->whereNumber('id');
 Route::post('communications/messages/{id}/{action}', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'action'])->whereNumber('id')->whereIn('action', ['cancel', 'retry', 'resolve']);

@@ -30,7 +30,7 @@ class VistaAuthController extends Controller
     public function start(Request $r, VistaClient $client)
     {
         $base = $client->base();
-        $d = $r->validate(['mode' => 'required|in:login,connect']);
+        $d = $r->validate(['mode' => 'required|in:login,connect', 'locale' => 'sometimes|in:en,it']);
         $u = $r->user();
         if ($d['mode'] === 'connect') {
             app(ValidSession::class)->handle($r, fn (Request $request) => null);
@@ -47,7 +47,7 @@ class VistaAuthController extends Controller
         $r->session()->put('vista_flow', ['state' => $state, 'verifier' => $verifier, 'expires' => time() + 600, 'mode' => $d['mode'], 'user_id' => $u?->id, 'auth_version' => $u?->auth_version, 'shop_id' => $d['mode'] === 'connect' ? $m->shop_id : null, 'provider' => $base]);
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
 
-        return ['data' => ['authorize_url' => $base.'/optical/authorize?'.http_build_query(['client_id' => config('vista.client_id'), 'redirect_uri' => $redirect, 'state' => $state, 'code_challenge' => $challenge, 'code_challenge_method' => 'S256'])]];
+        return ['data' => ['authorize_url' => $base.'/optical/authorize?'.http_build_query(['client_id' => config('vista.client_id'), 'redirect_uri' => $redirect, 'state' => $state, 'code_challenge' => $challenge, 'code_challenge_method' => 'S256', 'locale' => $d['locale'] ?? 'en'])]];
     }
 
     public function finish(Request $r, VistaClient $client)

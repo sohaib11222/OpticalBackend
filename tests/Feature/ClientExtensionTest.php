@@ -59,6 +59,69 @@ class ClientExtensionTest extends TestCase
         return (new WithTenant($this->membership->shop_id, $this->owner->id))->handle(new \stdClass, $fn);
     }
 
+    public function test_bulk_messages_are_atomic_personalized_and_idempotent(): void
+    {
+        $second = $this->postJson('/api/v1/customers', ['first_name' => 'Second', 'last_name' => 'Person', 'email' => 'second@example.test', 'phone' => '+393331234568', 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
+        foreach (['sms', 'email'] as $channel) {
+            $payload = ['customer_ids' => [$this->customer, $second], 'channel' => $channel, 'purpose' => 'service', 'subject' => 'Hello {{first_name}}', 'body' => 'Welcome {{first_name}}', 'creation_key' => (string) Str::uuid()];
+            $this->postJson('/api/v1/communications/bulk/preview', $payload)->assertOk()->assertJsonPath('data.eligible', 0);
+            $this->postJson('/api/v1/communications/bulk', $payload)->assertUnprocessable();
+            foreach ($payload['customer_ids'] as $id) $this->postJson('/api/v1/customers/'.$id.'/consents', ['channel' => $channel, 'purpose' => 'service', 'granted' => true, 'evidence' => 'Customer requested service updates'])->assertOk();
+            $this->postJson('/api/v1/communications/bulk/preview', $payload)->assertOk()->assertJsonPath('data.eligible', 2);
+            $batch = $this->postJson('/api/v1/communications/bulk', $payload)->assertCreated()->assertJsonCount(2, 'messages')->json('data');
+            $this->postJson('/api/v1/communications/bulk', $payload)->assertCreated()->assertJsonPath('data.id', $batch['id']);
+            $this->postJson('/api/v1/communications/bulk', [...$payload, 'body' => 'Changed'])->assertConflict();
+            $this->assertDatabaseHas('customer_messages', ['customer_id' => $second, 'channel' => $channel, 'body' => 'Welcome Second']);
+        }
+        $this->assertDatabaseCount('customer_messages', 4);
+        $this->assertDatabaseCount('communication_batches', 2);
+        Http::assertNothingSent();
+    }
+
+    public function test_bulk_cannot_message_foreign_customers_or_whatsapp_or_unconsented_recipients(): void
+    {
+        $p = ['customer_ids' => [$this->customer, 999999], 'channel' => 'sms', 'purpose' => 'service', 'body' => 'Hello', 'creation_key' => (string) Str::uuid()];
+        $this->postJson('/api/v1/communications/bulk/preview', $p)->assertNotFound();
+        $this->postJson('/api/v1/communications/bulk', $p)->assertNotFound();
+        $this->postJson('/api/v1/communications/bulk', [...$p, 'channel' => 'whatsapp'])->assertUnprocessable();
+        $this->postJson('/api/v1/communications/bulk', [...$p, 'customer_ids' => [$this->customer, $this->customer]])->assertUnprocessable();
+        $this->postJson('/api/v1/communications/bulk', [...$p, 'customer_ids' => [$this->customer]])->assertUnprocessable();
+        $this->assertDatabaseCount('customer_messages', 0);
+        $this->assertDatabaseCount('communication_batches', 0);
+    }
+
+    public function test_sms_supports_a_sender_without_a_messaging_service_and_email_requires_tls_port(): void
+    {
+        config(['communications.enabled' => true, 'communications.public_url' => 'https://crm.example.test', 'communications.twilio.account_sid' => 'AC'.str_repeat('a',32), 'communications.twilio.auth_token' => 'test-only', 'communications.twilio.messaging_service_sid' => null, 'communications.twilio.sms_from' => '+393331111111']);
+        $provider = app(\App\Services\Communications\Provider::class);
+        $this->assertTrue($provider->ready('sms'));
+        $this->assertFalse($provider->ready('whatsapp'));
+        Http::fake(['api.twilio.com/*' => Http::response(['sid' => 'SM'.str_repeat('b',32)], 201)]);
+        $result = $provider->send(new CustomerMessage(['channel' => 'sms', 'recipient' => '+393331234567', 'body' => 'Hello', 'public_id' => (string) Str::uuid()]));
+        $this->assertSame('accepted', $result['status']);
+        Http::assertSent(fn($r) => $r['From'] === '+393331111111' && $r['Body'] === 'Hello' && !isset($r['MessagingServiceSid']));
+        config(['communications.aruba.username' => 'mail@example.test', 'communications.aruba.password' => 'test-only', 'communications.aruba.from_address' => 'mail@example.test', 'communications.aruba.host' => 'smtps.aruba.it', 'communications.aruba.port' => 465]);
+        $this->assertTrue($provider->ready('email'));
+        config(['communications.aruba.port' => 25]);
+        $this->assertFalse($provider->ready('email'));
+    }
+
+    public function test_bulk_preview_rejects_duplicate_addresses_and_backend_permissions(): void
+    {
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $second = $this->postJson('/api/v1/customers', ['first_name' => 'Other', 'last_name' => 'Contact', 'phone' => '+393331234567', 'creation_key' => (string) Str::uuid(), 'confirm_distinct' => true])->assertCreated()->json('data.id');
+        foreach ([$this->customer, $second] as $id) $this->postJson('/api/v1/customers/'.$id.'/consents', ['channel' => 'sms', 'purpose' => 'service', 'granted' => true, 'evidence' => 'Customer requested updates'])->assertOk();
+        $p = ['customer_ids' => [$this->customer, $second], 'channel' => 'sms', 'purpose' => 'service', 'body' => 'Hello', 'creation_key' => (string) Str::uuid()];
+        $this->postJson('/api/v1/communications/bulk/preview', $p)->assertOk()->assertJsonPath('data.rows.1.reason', 'duplicate_recipient');
+        $this->postJson('/api/v1/communications/bulk', $p)->assertUnprocessable();
+        $this->assertDatabaseCount('customer_messages', 0);
+        $employee = User::factory()->create(['password' => self::PASS]);
+        ShopMembership::create(['shop_id' => $this->membership->shop_id, 'user_id' => $employee->id, 'role_id' => Role::where('name', 'salesperson')->value('id'), 'permission_overrides' => ['communications.send' => false]]);
+        $this->login($employee);
+        $this->postJson('/api/v1/communications/bulk/preview', $p)->assertForbidden();
+        $this->postJson('/api/v1/communications/bulk', $p)->assertForbidden();
+    }
+
     public function test_employee_invitation_overrides_suspension_and_owner_protection(): void
     {
         $payload = ['name' => 'Sales Employee', 'email' => 'employee@example.test', 'role' => 'salesperson', 'status' => 'active', 'permission_overrides' => ['products.read' => false]];

@@ -22,6 +22,30 @@ use Illuminate\Validation\Rule;
 
 class CommunicationController extends Controller
 {
+    private function bulkData(Request $r): array
+    {
+        Access::require('communications.send');
+        Access::require('customers.read');
+        return $r->validate([
+            'customer_ids' => 'required|array|min:1|max:100', 'customer_ids.*' => 'required|integer|min:1|distinct',
+            'channel' => 'required|in:sms,email', 'purpose' => 'required|in:service,marketing',
+            'subject' => 'required_if:channel,email|nullable|string|max:200', 'body' => 'required|string|max:4000',
+            'scheduled_at' => 'nullable|date|after_or_equal:now', 'delay_minutes' => 'nullable|integer|min:0|max:525600',
+            'creation_key' => 'required|uuid',
+        ]);
+    }
+
+    public function bulkPreview(Request $r, \App\Services\Communications\BulkMessages $bulk)
+    {
+        return ['data' => $bulk->preview($this->bulkData($r))];
+    }
+
+    public function bulkSend(Request $r, \App\Services\Communications\BulkMessages $bulk)
+    {
+        $batch = $bulk->send($this->bulkData($r), $r->user()->id);
+        return response()->json(['data' => $batch, 'messages' => CustomerMessage::whereIn('id', $batch->message_ids)->get()], 201);
+    }
+
     public function readiness(Provider $provider)
     {
         Access::require('communications.read');
