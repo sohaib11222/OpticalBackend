@@ -41,7 +41,10 @@ class PublishVista
             abort_if($images->isEmpty() || $images->count() > 100, 422, 'Choose between one and one hundred clean active product photos.');
             $imageMap = $images->map(fn ($i) => ['local_id' => $i->id, 'remote_key' => Str::uuid()->toString()])->all();
             $mapping = $d['mapping'];
-            abort_if(array_key_exists('gallery_image_ids', $mapping) && empty($mapping['gallery_image_ids']), 422, 'Select at least one clean main product photograph.');
+            // Seller eyewear may use color photographs without a main gallery.
+            // Ownership of every referenced photograph is checked below.
+            $hasColorPhotos = collect($mapping['variants'] ?? [])->contains(fn ($row) => ! empty($row['image_ids']) || ! empty($row['image_indices']));
+            abort_if(array_key_exists('gallery_image_ids', $mapping) && empty($mapping['gallery_image_ids']) && ! $hasColorPhotos, 422, 'Select at least one clean main or color photograph.');
             array_walk_recursive($mapping, function ($value, $key) use ($images) {
                 if ($key === 'image_index') {
                     abort_unless(is_numeric($value) && $value >= 1 && $value <= $images->count(), 422, 'Choose an available clean product photo number.');

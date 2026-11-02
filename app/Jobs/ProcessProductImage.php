@@ -80,10 +80,13 @@ class ProcessProductImage implements ShouldQueue
             if (! $decoded) {
                 throw new \RuntimeException('Image cannot be decoded.');
             }
-            $display = 'shops/'.$this->shopId.'/catalog/display/'.$image->id.($image->mime === 'image/png' ? '.png' : '.jpg');
+            // Normalize WebP to PNG after scanning; preserve transparency and keep
+            // the downstream Vista image API's PNG/JPEG contract unchanged.
+            $displayMime = $image->mime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+            $display = 'shops/'.$this->shopId.'/catalog/display/'.$image->id.($displayMime === 'image/png' ? '.png' : '.jpg');
             ob_start();
             try {
-                if ($image->mime === 'image/png') {
+                if ($displayMime === 'image/png') {
                     imagealphablending($decoded, false);
                     imagesavealpha($decoded, true);
                     imagepng($decoded, null, 6);
@@ -98,13 +101,14 @@ class ProcessProductImage implements ShouldQueue
                 throw new \RuntimeException('Processed image exceeds safe limits.');
             }
             $disk->put($display, $bytes);
-            DB::transaction(function () use ($image, $display) {
+            DB::transaction(function () use ($image, $display, $displayMime) {
                 ShopLock::acquire();
                 $fresh = ProductImage::lockForUpdate()->findOrFail($image->id);
                 if ($fresh->archived_at) {
                     return;
                 }
                 $fresh->display_key = $display;
+                $fresh->mime = $displayMime;
                 $fresh->scan_status = 'clean';
                 $fresh->scan_error = null;
                 $fresh->scanned_at = now();

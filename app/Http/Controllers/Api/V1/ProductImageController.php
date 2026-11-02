@@ -17,6 +17,23 @@ use Illuminate\Validation\ValidationException;
 
 class ProductImageController extends Controller
 {
+    public function fromUrl(Request $r, int $id)
+    {
+        $this->permit('write');
+        $d = $r->validate(['url' => 'required|url:https|max:2048', 'upload_key' => 'required|uuid', 'shop_id' => 'prohibited']);
+        $product = Product::findOrFail($id);
+        abort_if($product->status === 'archived', 409, 'Restore the product before adding photographs.');
+        $file = app(\App\Services\Files\RemoteProductPhoto::class)->download($d['url']);
+        try {
+            // The URL validation above already cached the original empty file bag.
+            $upload = Request::createFrom($r);
+            $upload->files->set('file', $file);
+            return $this->store($upload, $id);
+        } finally {
+            @unlink($file->getPathname());
+        }
+    }
+
     private function permit(string $action): void
     {
         abort_unless(app(TenantContext::class)->membership()->can('products.'.$action), 403);
@@ -39,15 +56,15 @@ class ProductImageController extends Controller
         $file = $r->file('file');
         $mime = $file->getMimeType();
         $extension = strtolower($file->getClientOriginalExtension());
-        if (! in_array($mime, ['image/jpeg', 'image/png']) || ! in_array($extension, ['jpg', 'jpeg', 'png'])) {
-            throw ValidationException::withMessages(['file' => 'Choose a PNG or JPEG photograph.']);
+        if (! in_array($mime, ['image/jpeg', 'image/png', 'image/webp']) || ! in_array($extension, ['jpg', 'jpeg', 'png', 'webp'])) {
+            throw ValidationException::withMessages(['file' => 'Choose a PNG, JPEG or WebP photograph.']);
         }
         $size = @getimagesize($file->getRealPath());
         if (! $size || $size[0] * $size[1] > 25000000) {
             throw ValidationException::withMessages(['file' => 'Image dimensions must not exceed 25 megapixels.']);
         }
         $hash = hash_file('sha256', $file->getRealPath());
-        $key = 'shops/'.app(TenantContext::class)->id().'/catalog/source/'.Str::uuid().($mime === 'image/png' ? '.png' : '.jpg');
+        $key = 'shops/'.app(TenantContext::class)->id().'/catalog/source/'.Str::uuid().match ($mime) { 'image/png' => '.png', 'image/webp' => '.webp', default => '.jpg' };
         $stored = false;
         try {
             $image = DB::transaction(function () use ($id, $d, $file, $mime, $hash, $key, &$stored, $r) {

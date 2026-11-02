@@ -28,6 +28,7 @@ Route::patch('orders/{id}', [OrderController::class, 'update'])->whereNumber('id
 Route::get('orders/{id}/history', [OrderController::class, 'history'])->whereNumber('id');
 Route::post('orders/{id}/{action}', [OrderController::class, 'transition'])->whereNumber('id')->whereIn('action', ['confirm', 'fulfil', 'cancel', 'reverse']);
 Route::post('products/{id}/images', [ProductImageController::class, 'store'])->whereNumber('id')->middleware('throttle:uploads');
+Route::post('products/{id}/images/from-url', [ProductImageController::class, 'fromUrl'])->whereNumber('id')->middleware('throttle:uploads');
 Route::get('catalog-images/{id}', [ProductImageController::class, 'show'])->whereNumber('id');
 Route::patch('catalog-images/{id}', [ProductImageController::class, 'update'])->whereNumber('id');
 Route::post('catalog-images/{id}/retry', [ProductImageController::class, 'retry'])->whereNumber('id')->middleware('throttle:uploads');

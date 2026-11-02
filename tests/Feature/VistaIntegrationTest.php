@@ -170,10 +170,10 @@ class VistaIntegrationTest extends TestCase
                 $this->assertSame(0, $p->balance()->first()->reserved);
             }
         }
-        $mapping = ['category_id' => 1, 'product_type' => 'frame', 'gallery_image_ids' => [(string) $im->id],
+        $mapping = ['category_id' => 1, 'product_type' => 'frame', 'gallery_image_ids' => [],
             'variants' => [['option_key' => (string) Str::uuid(), 'color_name' => 'Blue', 'stock_quantity' => 3, 'image_ids' => [(string) $im->id]]]];
         $op = app(PublishVista::class)->prepare($p->id, ['version' => $p->version, 'quantity' => 3, 'creation_key' => Str::uuid()->toString(), 'mapping' => $mapping], $actor);
-        $this->assertSame([$op->image_map[0]['remote_key']], $op->payload['product']['gallery_image_ids']);
+        $this->assertSame([], $op->payload['product']['gallery_image_ids']);
         $this->assertSame([$op->image_map[0]['remote_key']], $op->payload['product']['variants'][0]['image_ids']);
         $this->assertSame([(string) $im->id], VistaPublication::findOrFail($op->vista_publication_id)->mapping['variants'][0]['image_ids']);
         $this->assertSame(7, $p->balance()->first()->available);
