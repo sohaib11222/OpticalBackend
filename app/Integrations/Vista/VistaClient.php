@@ -39,12 +39,17 @@ class VistaClient
         }
         if (! $response->successful()) {
             $code = $response->status();
+            $providerCode = is_string($response->json('code')) ? $response->json('code') : null;
+            $providerData = is_array($response->json('data')) ? $response->json('data') : [];
             $invalid = array_filter(array_keys((array) $response->json('errors', [])), fn ($key) => is_string($key) && preg_match('/^(product\.)?[a-z_]+(\.[0-9]+)?$/D', $key));
             $fields = $invalid ? ' Fields: '.implode(', ', array_slice($invalid, 0, 10)).'.' : '';
             // Never log HTTP requests, bearer tokens, OAuth secrets or arbitrary remote exception content.
+            if ($providerCode === 'vista360_subscription_required') {
+                throw new VistaFailure(403, 'An active Vista Express 360 subscription is required. Renew or reactivate it in the Vista Seller Panel.', 'vista360_subscription_required', $providerData);
+            }
             throw new VistaFailure($code, match ($code) {
                 401,403 => 'Vista access expired, was revoked or the seller store is unavailable. Reconnect after resolving seller access.',409 => 'Vista product changed or this operation conflicts. Refresh the publication and review the mapping.',422 => 'Vista rejected product fields, category configuration, SKU or image. Review the publication details.'.$fields,default => 'Vista Express is temporarily unavailable. Retry the same operation.'
-            });
+            }, $providerCode, $providerData);
         }
         $body = $response->status() === 204 ? [] : $response->json();
         if (! is_array($body)) {

@@ -17,4 +17,9 @@ class VistaConnection extends Model
     {
         return ['access_token' => 'encrypted', 'expires_at' => 'datetime', 'synced_at' => 'datetime', 'next_sync_at' => 'datetime', 'checkpoint' => 'array'];
     }
+
+    public function vista360Entitlement()
+    {
+        return $this->hasOne(Vista360Entitlement::class);
+    }
 }

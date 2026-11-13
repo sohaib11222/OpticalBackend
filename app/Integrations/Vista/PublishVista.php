@@ -104,6 +104,7 @@ class PublishVista
         }
         $pub = VistaPublication::findOrFail($op->vista_publication_id);
         $c = VistaConnection::findOrFail($pub->vista_connection_id);
+        abort_unless(in_array($c->status, ['connected', 'syncing'], true) && $c->expires_at?->isFuture(), 409, 'Vista Express access is unavailable. Renew the Vista Express 360 subscription or reconnect before retrying this publication.');
         $client = app(VistaClient::class);
         try {
             foreach ($op->image_map as $map) {
@@ -127,6 +128,15 @@ class PublishVista
                 Audit::record('vista.published', $op->shop_id, $op->actor_id, 'vista_publication', $pub->id);
             });
         } catch (\Throwable $e) {
+            if ($e instanceof VistaFailure && $e->reason === 'vista360_subscription_required') {
+                VistaConnection::whereKey($c->id)->update(['status' => 'subscription_required', 'last_error' => $e->getMessage()]);
+                VistaOutbox::whereKey($op->id)->whereNotIn('status', ['completed', 'rejected'])->update([
+                    'status' => 'uncertain',
+                    'last_error' => $e->getMessage().' The saved allocation remains reserved; renew, then explicitly retry this publication.',
+                    'next_attempt_at' => null,
+                ]);
+                return;
+            }
             // Only the provider's atomic publication rejection proves that no stock was accepted.
             // Transport failures, auth loss and local failures retain reservations for reconciliation.
             VistaOutbox::whereKey($op->id)->whereNotIn('status', ['completed', 'rejected'])->update(['status' => 'uncertain', 'last_error' => $e instanceof VistaFailure ? $e->getMessage() : 'Publication could not be confirmed. Retry the same operation; allocated stock remains reserved.', 'next_attempt_at' => now()->addMinutes(min(60, 2 ** min($op->attempts, 5)))]);

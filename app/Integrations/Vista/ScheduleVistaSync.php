@@ -20,7 +20,7 @@ class ScheduleVistaSync
         }
         // Atomic lease deduplicates browser/scheduler dispatch and recovers lost workers.
         $claimed = VistaConnection::withoutGlobalScope('shop')->whereKey($connection->id)
-            ->whereNotIn('status', ['disconnected', 'requires_reconnect'])->where('expires_at', '>', now())
+            ->whereNotIn('status', ['disconnected', 'requires_reconnect', 'subscription_required'])->where('expires_at', '>', now())
             ->where(fn ($q) => $q->whereNull('next_sync_at')->orWhere('next_sync_at', '<=', now()))
             ->update(['next_sync_at' => now()->addMinutes(10)]);
         if (! $claimed) {

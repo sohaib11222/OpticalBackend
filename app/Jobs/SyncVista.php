@@ -41,7 +41,7 @@ class SyncVista implements ShouldQueue
     {
         abort_unless(app(TenantContext::class)->membership()->can('integrations.write'), 403);
         $c = VistaConnection::findOrFail($this->connectionId);
-        if (in_array($c->status, ['disconnected', 'requires_reconnect'])) {
+        if (in_array($c->status, ['disconnected', 'requires_reconnect', 'subscription_required'])) {
             return;
         }
         try {
@@ -61,10 +61,15 @@ class SyncVista implements ShouldQueue
                 if (in_array($current->status, ['disconnected', 'requires_reconnect']) || ! hash_equals((string) $current->access_token, (string) $c->access_token)) {
                     return false;
                 }
+                $subscriptionBlocked = $e instanceof VistaFailure && $e->reason === 'vista360_subscription_required';
                 $revoked = $e instanceof VistaFailure && in_array($e->status, [401, 403]);
-                $current->forceFill(['status' => $revoked ? 'requires_reconnect' : 'error', 'next_sync_at' => now()->addMinutes(5), 'last_error' => $e instanceof VistaFailure ? $e->getMessage() : 'Synchronization failed. Retry after checking connection and worker availability.'])->save();
+                $current->forceFill([
+                    'status' => $subscriptionBlocked ? 'subscription_required' : ($revoked ? 'requires_reconnect' : 'error'),
+                    'next_sync_at' => $subscriptionBlocked ? null : now()->addMinutes(5),
+                    'last_error' => $e instanceof VistaFailure ? $e->getMessage() : 'Synchronization failed. Retry after checking connection and worker availability.',
+                ])->save();
 
-                return ! $revoked;
+                return ! $revoked && ! $subscriptionBlocked;
             });
             if (! $retry) {
                 return;

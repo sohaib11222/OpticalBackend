@@ -15,6 +15,7 @@ use App\Models\Shop;
 use App\Models\ShopMembership;
 use App\Models\User;
 use App\Models\VistaConnection;
+use App\Models\Vista360Entitlement;
 use App\Models\VistaPublication;
 use App\Models\VistaRecord;
 use App\Services\Commerce\Catalog;
@@ -46,12 +47,36 @@ class VistaIntegrationTest extends TestCase
         return ['access_token' => 'vos_'.str_repeat('a', 64), 'expires_at' => now()->addDay()->toIso8601String(), 'identity' => ['subject' => '41', 'name' => 'Vista Seller', 'email' => 'vista@example.test', 'email_verified' => true, 'store' => ['id' => '12', 'name' => 'Vista Shop', 'status' => 'active'], 'currency' => 'EUR']];
     }
 
+    /** @return array{data: array<string,mixed>} */
+    private function vista360Entitlement(array $overrides = []): array
+    {
+        return ['data' => array_replace_recursive([
+            'active' => true,
+            'status' => 'active',
+            'subscription_id' => 'vista360-test-subscription',
+            'plan' => ['slug' => 'pro', 'name' => 'Pro', 'renewal_url' => 'https://seller.example.test/vista-express-360'],
+            'features' => [
+                'crm.access', 'crm.customers', 'crm.optical', 'crm.agenda',
+                'crm.products', 'crm.stock', 'crm.orders', 'crm.documents',
+                'crm.reports', 'crm.communications', 'crm.team',
+                'crm.vista_publish', 'crm.integrations',
+            ],
+            'starts_at' => now()->subDay()->toIso8601String(),
+            'expires_at' => now()->addMonth()->toIso8601String(),
+            'entitlement_version' => 1,
+            'renewal_url' => 'https://seller.example.test/vista-express-360',
+        ], $overrides)];
+    }
+
     private function login(): array
     {
         $this->configured();
         $queue = Queue::getFacadeRoot();
         Queue::fake([SyncVista::class]);
-        Http::fake(['*/api/optical/token' => Http::response($this->token())]);
+        Http::fake([
+            '*/api/optical/token' => Http::response($this->token()),
+            '*/api/optical/subscription' => Http::response($this->vista360Entitlement()),
+        ]);
         $url = $this->postJson('/api/v1/auth/vista/start', ['mode' => 'login'])->assertOk()->json('data.authorize_url');
         parse_str(parse_url($url, PHP_URL_QUERY), $q);
         $r = $this->postJson('/api/v1/auth/vista/finish', ['code' => str_repeat('c', 64), 'state' => $q['state']])->assertOk()->assertJsonPath('data.shop.status', 'active')->json('data');
@@ -254,6 +279,39 @@ class VistaIntegrationTest extends TestCase
         $this->postJson('/api/v1/auth/vista/start', ['mode' => 'connect'])->assertUnauthorized();
         $this->getJson('/api/v1/auth/me')->assertUnauthorized();
         $this->assertDatabaseCount('vista_connections', 1);
+    }
+
+    public function test_vista360_workspace_access_is_enforced_by_the_backend_not_only_the_frontend(): void
+    {
+        $this->login();
+        $connection = VistaConnection::withoutGlobalScope('shop')->firstOrFail();
+        $snapshot = Vista360Entitlement::withoutGlobalScope('shop')
+            ->where('vista_connection_id', $connection->id)
+            ->firstOrFail();
+
+        // A fresh snapshot avoids a remote request: this proves the workspace
+        // middleware itself denies an expired/suspended paid connection.
+        DB::table('vista360_entitlements')->where('id', $snapshot->id)->update([
+            'status' => 'suspended',
+            'features' => json_encode([]),
+            'checked_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->getJson('/api/v1/customers')
+            ->assertForbidden()
+            ->assertJsonPath('code', 'vista360_subscription_required');
+
+        DB::table('vista360_entitlements')->where('id', $snapshot->id)->update([
+            'status' => 'active',
+            'features' => json_encode(['crm.access']),
+            'checked_at' => now(),
+            'expires_at' => now()->addDay(),
+            'updated_at' => now(),
+        ]);
+        $this->getJson('/api/v1/customers')
+            ->assertForbidden()
+            ->assertJsonPath('code', 'vista360_plan_feature_required')
+            ->assertJsonPath('data.feature', 'crm.customers');
     }
 
     public function test_automatic_sync_claims_once_then_resumes_on_schedule(): void

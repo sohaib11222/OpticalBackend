@@ -7,6 +7,8 @@ use App\Http\Middleware\ValidSession;
 use App\Http\Resources\SessionResource;
 use App\Integrations\Vista\ScheduleVistaSync;
 use App\Integrations\Vista\VistaClient;
+use App\Integrations\Vista\VistaEntitlements;
+use App\Integrations\Vista\VistaFailure;
 use App\Models\Role;
 use App\Models\Shop;
 use App\Models\ShopMembership;
@@ -50,7 +52,7 @@ class VistaAuthController extends Controller
         return ['data' => ['authorize_url' => $base.'/optical/authorize?'.http_build_query(['client_id' => config('vista.client_id'), 'redirect_uri' => $redirect, 'state' => $state, 'code_challenge' => $challenge, 'code_challenge_method' => 'S256', 'locale' => $d['locale'] ?? 'en'])]];
     }
 
-    public function finish(Request $r, VistaClient $client)
+    public function finish(Request $r, VistaClient $client, VistaEntitlements $entitlements)
     {
         $d = $r->validate(['code' => 'required|string|size:64', 'state' => 'required|string|size:64']);
         $flow = $r->session()->pull('vista_flow');
@@ -59,7 +61,27 @@ class VistaAuthController extends Controller
         if ($flow['mode'] === 'connect') {
             app(ValidSession::class)->handle($r, fn (Request $request) => null);
         }
-        $result = $client->send('POST', 'token', ['client_id' => config('vista.client_id'), 'client_secret' => config('vista.client_secret'), 'code' => $d['code'], 'code_verifier' => $flow['verifier'], 'redirect_uri' => config('vista.redirect_uri')]);
+        try {
+            $result = $client->send('POST', 'token', [
+                'client_id' => config('vista.client_id'),
+                'client_secret' => config('vista.client_secret'),
+                'code' => $d['code'],
+                'code_verifier' => $flow['verifier'],
+                'redirect_uri' => config('vista.redirect_uri'),
+                // A normal explicit account connection remains an ordinary
+                // integration. Only a sign-in creates CRM paid access mode.
+                'service' => $flow['mode'] === 'login' ? 'vista360' : 'integration',
+            ]);
+        } catch (VistaFailure $failure) {
+            if ($failure->reason === 'vista360_subscription_required') {
+                return response()->json([
+                    'message' => 'A current Vista Express 360 subscription is required before this seller can access the CRM.',
+                    'code' => 'vista360_subscription_required',
+                    'data' => $failure->details,
+                ], 403);
+            }
+            throw $failure;
+        }
         $validated = Validator::make($result, ['access_token' => 'required|string|regex:/^vos_[A-Za-z0-9]{64}$/D', 'expires_at' => 'required|date|after:now', 'identity.subject' => 'required|string|max:100', 'identity.email' => 'required|email:rfc|max:254', 'identity.name' => 'required|string|max:150', 'identity.email_verified' => 'required|boolean', 'identity.store.id' => 'required|string|max:100', 'identity.store.name' => 'required|string|max:150', 'identity.store.status' => 'required|in:active', 'identity.currency' => 'required|in:EUR'])->validate();
         $identity = $validated['identity'];
         $context = app(TenantContext::class);
@@ -91,7 +113,7 @@ class VistaAuthController extends Controller
                 abort_unless($u->status === 'active' && $u->account_type === 'shop' && $m && $m->can('integrations.write') && $shop->status === 'active', 403, 'Vista Express 360 access is unavailable.');
                 $context->set($m);
                 $connection = $old ?? new VistaConnection;
-                $connection->fill(['provider' => $flow['provider'], 'subject' => $identity['subject'], 'store_id' => $identity['store']['id'], 'store_name' => $identity['store']['name'], 'user_id' => $u->id, 'access_token' => $validated['access_token'], 'expires_at' => $validated['expires_at'], 'status' => 'connected', 'last_error' => null]);
+                $connection->fill(['provider' => $flow['provider'], 'access_mode' => $flow['mode'] === 'login' ? 'vista360' : 'integration', 'subject' => $identity['subject'], 'store_id' => $identity['store']['id'], 'store_name' => $identity['store']['name'], 'user_id' => $u->id, 'access_token' => $validated['access_token'], 'expires_at' => $validated['expires_at'], 'status' => 'connected', 'last_error' => null]);
                 $connection->save();
                 Audit::record('vista.connected', $shop->id, $u->id, 'vista_connection', $connection->id);
                 $u->refresh();
@@ -102,11 +124,25 @@ class VistaAuthController extends Controller
         } finally {
             $context->clear();
         }
+        $connection = VistaConnection::withoutGlobalScope('shop')->where('shop_id', $user->connected_shop_id)->firstOrFail();
+        if ($flow['mode'] === 'login') {
+            // The provider token was issued only after its own subscription
+            // check. Save a local snapshot now so the first protected CRM API
+            // is both fast and still checked by the middleware thereafter.
+            try {
+                $entitlements->refresh($connection, $client);
+            } catch (VistaFailure $failure) {
+                if ($failure->reason === 'vista360_subscription_required') {
+                    return response()->json(['message' => 'This Vista Express 360 subscription is no longer active.', 'code' => 'vista360_subscription_required', 'data' => $failure->details], 403);
+                }
+                throw $failure;
+            }
+        }
+
         Auth::guard('web')->login($user);
         $r->session()->regenerate();
         $r->session()->put(['shop_id' => $user->connected_shop_id, 'auth_version' => $user->auth_version, 'authenticated_at' => time()]);
 
-        $connection = VistaConnection::withoutGlobalScope('shop')->where('shop_id', $user->connected_shop_id)->firstOrFail();
         VistaConnection::withoutGlobalScope('shop')->whereKey($connection->id)->update(['next_sync_at' => null]);
         app(ScheduleVistaSync::class)->dispatch($connection);
 

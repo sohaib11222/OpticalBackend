@@ -24,7 +24,7 @@ class ReconcileVista extends Command
         $count = 0;
         // Every job rechecks the actor, active shop and current permissions. Expired
         // grants require reconnection; a schedule never invents new authority.
-        VistaConnection::withoutGlobalScope('shop')->whereNotIn('status', ['disconnected', 'requires_reconnect'])->where('expires_at', '>', now())
+        VistaConnection::withoutGlobalScope('shop')->whereNotIn('status', ['disconnected', 'requires_reconnect', 'subscription_required'])->where('expires_at', '>', now())
             ->where(fn ($q) => $q->whereNull('next_sync_at')->orWhere('next_sync_at', '<=', now()))->orderBy('id')->limit(100)->get()->each(function ($c) use (&$count) {
                 $count += (int) app(ScheduleVistaSync::class)->dispatch($c);
             });

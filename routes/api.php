@@ -35,7 +35,7 @@ Route::middleware('web')->prefix('v1')->group(function () {
             });
         });
     }
-    Route::middleware(['auth:sanctum', 'session.valid', 'actor:shop', 'account.verified', 'tenant', \App\Http\Middleware\WorkspaceAccess::class])->group(base_path('routes/workspace.php'));
+    Route::middleware(['auth:sanctum', 'session.valid', 'actor:shop', 'account.verified', 'tenant', \App\Http\Middleware\Vista360SubscriptionAccess::class, \App\Http\Middleware\WorkspaceAccess::class])->group(base_path('routes/workspace.php'));
 
     Route::prefix('admin')->middleware(['auth:sanctum', 'session.valid', 'actor:admin', 'account.verified'])->group(function () {
         Route::prefix('shops/{managedShop}/workspace')->whereNumber('managedShop')->middleware([AdminShopContext::class, \App\Http\Middleware\WorkspaceAccess::class])->group(base_path('routes/workspace.php'));
@@ -48,5 +48,6 @@ Route::middleware('web')->prefix('v1')->group(function () {
 });
 
 Route::post('v1/communications/callback/{uuid}', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'status'])->whereUuid('uuid')->middleware('throttle:120,1');
+Route::post('v1/integrations/vista/subscription-webhook', \App\Http\Controllers\Api\V1\VistaSubscriptionWebhookController::class)->middleware('throttle:120,1');
 Route::post('v1/communications/inbound', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'inbound'])->middleware('throttle:120,1');
 Route::match(['get', 'post'], 'v1/communications/preferences/{uuid}/{hash}', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'preferences'])->whereUuid('uuid')->middleware('throttle:30,1');
