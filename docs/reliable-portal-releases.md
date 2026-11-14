@@ -40,6 +40,10 @@ The release command intentionally refuses dirty checkouts, wrong branches, and s
 
 ## Every future frontend/Admin release
 
+The Admin release uses `npm ci`; therefore `package-lock.json` is its sole
+dependency lockfile. `yarn.lock` is intentionally ignored and must not be
+reintroduced as a tracked server-side change.
+
 Pull the backend deployment tooling first after reviewing its server edits. Then run separately:
 
 ```bash
