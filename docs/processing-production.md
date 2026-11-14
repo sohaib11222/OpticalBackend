@@ -51,6 +51,10 @@ FILE_SCANNER=clamav
 CLAMD_ADDRESS=unix:///var/run/clamav/clamd.ctl
 QUEUE_CONNECTION=database
 DB_QUEUE_RETRY_AFTER=360
+# Product photos retain antivirus/MIME/integrity checks but are processed in
+# the upload response, preventing healthy catalogue images from lingering in
+# Pending merely because a worker heartbeat is delayed.
+PRODUCT_IMAGES_SYNC=true
 ```
 
 Do not retain the TCP address unless clamd explicitly listens on that TCP port.

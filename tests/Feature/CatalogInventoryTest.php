@@ -2,8 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\Middleware\WithTenant;
-use App\Jobs\ProcessProductImage;
 use App\Models\Permission;
 use App\Models\Product;
 use App\Models\Role;
@@ -36,6 +34,7 @@ class CatalogInventoryTest extends TestCase
         parent::setUp();
         Queue::fake();
         Storage::fake('private');
+        $this->useScanner(true);
         $this->owner = $this->owner('catalog@example.test');
         $this->login($this->owner);
         $this->settings('EUR');
@@ -77,7 +76,7 @@ class CatalogInventoryTest extends TestCase
         return $this->postJson('/api/v1/products', $this->data($extra))->assertCreated()->json('data');
     }
 
-    public function test_url_photograph_import_is_quarantined_and_uses_the_existing_scanner_job(): void
+    public function test_url_photograph_import_is_scanned_before_it_is_available(): void
     {
         $product = $this->product();
         $photo = UploadedFile::fake()->image('external.png');
@@ -85,18 +84,16 @@ class CatalogInventoryTest extends TestCase
             ->shouldReceive('download')->once()->with('https://example.test/photo.png')->andReturn($photo);
         $image = $this->postJson('/api/v1/products/'.$product['id'].'/images/from-url', [
             'url' => 'https://example.test/photo.png', 'upload_key' => (string) Str::uuid(),
-        ])->assertAccepted()->assertJsonPath('data.scan_status', 'pending')->json('data');
-        $this->get('/api/v1/catalog-images/'.$image['id'])->assertConflict();
-        Queue::assertPushed(ProcessProductImage::class, fn ($job) => $job->imageId === $image['id']);
+        ])->assertCreated()->assertJsonPath('data.scan_status', 'clean')->json('data');
+        $this->get('/api/v1/catalog-images/'.$image['id'])->assertOk();
+        Queue::assertNothingPushed();
         $this->assertFileDoesNotExist($photo->getPathname());
-        $this->assertDatabaseHas('product_images', ['id' => $image['id'], 'product_id' => $product['id'], 'scan_status' => 'pending']);
+        $this->assertDatabaseHas('product_images', ['id' => $image['id'], 'product_id' => $product['id'], 'scan_status' => 'clean']);
     }
 
-    private function photo(int $id, bool $clean = true): int
+    private function useScanner(bool $clean): void
     {
-        $image = $this->postJson('/api/v1/products/'.$id.'/images', ['file' => UploadedFile::fake()->image('frame.png', 60, 60), 'upload_key' => (string) Str::uuid()])->assertStatus(202)->json('data.id');
-        $this->get('/api/v1/catalog-images/'.$image)->assertConflict();
-        $scanner = new class($clean) implements FileScanner
+        $this->app->instance(FileScanner::class, new class($clean) implements FileScanner
         {
             public function __construct(private bool $clean) {}
 
@@ -104,11 +101,22 @@ class CatalogInventoryTest extends TestCase
             {
                 return $this->clean;
             }
-        };
-        $job = new ProcessProductImage($this->owner->memberships()->first()->shop_id, $this->owner->id, $image);
-        (new WithTenant($job->shopId, $job->actorId))->handle($job, fn ($j) => $j->handle($scanner));
+        });
+    }
 
-        return $image;
+    private function photo(int $id, bool $clean = true): int
+    {
+        $this->useScanner($clean);
+        $response = $this->postJson('/api/v1/products/'.$id.'/images', [
+            'file' => UploadedFile::fake()->image('frame.png', 60, 60),
+            'upload_key' => (string) Str::uuid(),
+        ]);
+        if ($clean) {
+            return $response->assertCreated()->assertJsonPath('data.scan_status', 'clean')->json('data.id');
+        }
+
+        $response->assertUnprocessable();
+        return \App\Models\ProductImage::withoutGlobalScope('shop')->where('product_id', $id)->latest('id')->value('id');
     }
 
     public function test_webp_is_scanned_and_normalized_to_png_for_publication(): void
@@ -116,20 +124,18 @@ class CatalogInventoryTest extends TestCase
         $p = $this->product();
         $bitmap = imagecreatetruecolor(10, 10);
         ob_start(); imagewebp($bitmap); $bytes = ob_get_clean(); imagedestroy($bitmap);
-        $id = $this->postJson('/api/v1/products/'.$p['id'].'/images', [
-            'file' => UploadedFile::fake()->createWithContent('color.webp', $bytes),
-            'upload_key' => (string) Str::uuid(),
-        ])->assertStatus(202)->json('data.id');
-        $this->get('/api/v1/catalog-images/'.$id)->assertConflict();
         $scanner = new class implements FileScanner {
             public bool $called = false;
             public function scan($stream): bool { $this->called = true; return true; }
         };
-        $job = new ProcessProductImage($this->owner->memberships()->first()->shop_id, $this->owner->id, $id);
-        (new WithTenant($job->shopId, $job->actorId))->handle($job, fn ($j) => $j->handle($scanner));
+        $this->app->instance(FileScanner::class, $scanner);
+        $id = $this->postJson('/api/v1/products/'.$p['id'].'/images', [
+            'file' => UploadedFile::fake()->createWithContent('color.webp', $bytes),
+            'upload_key' => (string) Str::uuid(),
+        ])->assertCreated()->assertJsonPath('data.scan_status', 'clean')->json('data.id');
         $this->assertTrue($scanner->called);
         $this->get('/api/v1/catalog-images/'.$id)->assertOk()->assertHeader('Content-Type', 'image/png');
-        $image = \App\Models\ProductImage::withoutGlobalScope('shop')->where('shop_id', $job->shopId)->findOrFail($id);
+        $image = \App\Models\ProductImage::withoutGlobalScope('shop')->where('shop_id', $this->owner->memberships()->first()->shop_id)->findOrFail($id);
         $this->assertSame('image/png', getimagesizefromstring(Storage::disk('private')->get($image->display_key))['mime']);
     }
 

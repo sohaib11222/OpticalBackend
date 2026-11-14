@@ -459,6 +459,33 @@ class FoundationTest extends TestCase
         $this->getJson('/api/v1/admin/shops')->assertOk();
     }
 
+    public function test_admin_reset_command_rotates_existing_credentials_and_revokes_sessions(): void
+    {
+        $admin = $this->admin();
+        $beforeVersion = $admin->auth_version;
+
+        $this->artisan('optical:admin-reset', [
+            'email' => 'new-platform-admin@example.test',
+            '--name' => 'New Platform Admin',
+            '--user' => $admin->id,
+        ])
+            ->expectsQuestion('New admin password (at least 12 characters, letters and numbers)', 'ReplacementPassword123!')
+            ->expectsOutput('Platform administrator credentials updated. All existing sessions for this account were revoked.')
+            ->assertSuccessful();
+
+        $admin->refresh();
+        $this->assertSame('new-platform-admin@example.test', $admin->email);
+        $this->assertSame('New Platform Admin', $admin->name);
+        $this->assertSame('admin', $admin->account_type);
+        $this->assertSame('active', $admin->status);
+        $this->assertTrue(Hash::check('ReplacementPassword123!', $admin->password));
+        $this->assertGreaterThan($beforeVersion, $admin->auth_version);
+        $this->postJson('/api/v1/admin/auth/login', [
+            'email' => $admin->email,
+            'password' => 'ReplacementPassword123!',
+        ])->assertOk();
+    }
+
     public function test_unverified_admin_access_is_allowed_in_production_without_changing_shop_verification(): void
     {
         config(['optical.email_verification_required' => true]);

@@ -8,6 +8,7 @@ use App\Models\Product;
 use App\Models\ProductImage;
 use App\Services\Audit;
 use App\Services\Commerce\ShopLock;
+use App\Services\Files\FileScanner;
 use App\Tenancy\TenantContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -47,6 +48,42 @@ class ProductImageController extends Controller
             $i->forceFill(['scan_status' => 'failed', 'scan_error' => 'queue_unavailable'])->save();
             report($e);
         }
+    }
+
+    /**
+     * Scan and normalize ordinary catalogue photographs before acknowledging
+     * the upload. This avoids a misleading permanent "pending" state when a
+     * queue worker is unavailable, while retaining the same MIME, size,
+     * integrity and antivirus checks used by the queued job.
+     */
+    private function process(ProductImage $image): ProductImage
+    {
+        if (! config('documents.product_images_sync', true)) {
+            $this->queue($image);
+
+            return $image;
+        }
+
+        try {
+            (new ProcessProductImage($image->shop_id, $image->uploaded_by, $image->id))
+                ->handle(app(FileScanner::class));
+        } catch (\Throwable $e) {
+            report($e);
+            $fresh = ProductImage::find($image->id);
+
+            // ProcessProductImage records a failed state itself. Returning a
+            // clear service error lets the UI explain what happened rather
+            // than claiming an upload is still pending indefinitely.
+            abort(503, $fresh?->scan_status === 'failed'
+                ? 'The image was saved but could not be safety-processed. Please retry the photograph.'
+                : 'Image safety processing is temporarily unavailable. Please retry the photograph.');
+        }
+
+        $fresh = ProductImage::findOrFail($image->id);
+        abort_if($fresh->scan_status === 'rejected', 422, 'This image was rejected by the security scan. Choose a different photograph.');
+        abort_unless($fresh->scan_status === 'clean' && $fresh->display_key, 503, 'Image processing did not complete. Please retry the photograph.');
+
+        return $fresh;
     }
 
     public function store(Request $r, int $id)
@@ -93,10 +130,9 @@ class ProductImageController extends Controller
                 Storage::disk('private')->delete($key);
             }throw $e;
         }
-        $result = $image->toArray();
-        $this->queue($image);
+        $image = $this->process($image);
 
-        return response()->json(['data' => $result], 202);
+        return response()->json(['data' => $image->toArray()], 201);
     }
 
     public function show(int $id)
@@ -114,10 +150,10 @@ class ProductImageController extends Controller
         $this->permit('write');
         $image = ProductImage::findOrFail($id);
         abort_unless(in_array($image->scan_status, ['pending', 'failed']) && ! $image->archived_at, 409, 'This image cannot be reprocessed.');
-        $data = $image->toArray();
-        $this->queue($image);
+        $image->forceFill(['scan_status' => 'pending', 'scan_error' => null])->save();
+        $image = $this->process($image);
 
-        return response()->json(['data' => $data], 202);
+        return response()->json(['data' => $image->toArray()], 200);
     }
 
     public function update(Request $r, int $id)
