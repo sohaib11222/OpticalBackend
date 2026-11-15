@@ -170,7 +170,11 @@ class VistaIntegrationTest extends TestCase
         $b = $this->getJson('/api/v1/customer-imports/'.$id)->assertOk()->json('data');
         $row = $this->getJson('/api/v1/customer-imports/'.$id.'/rows')->assertOk()->json('data.0');
         $b = $this->patchJson('/api/v1/customer-imports/'.$id.'/decisions', ['version' => $b['version'], 'rows' => [['id' => $row['id'], 'decision' => 'create']]])->assertOk()->json('data');
-        $this->postJson('/api/v1/customer-imports/'.$id.'/commit', ['version' => $b['version']])->assertAccepted();
+        // Customer import processing is synchronous by default, so the
+        // completed import is returned directly instead of being left pending
+        // for a queue worker. Deployments can still opt into the asynchronous
+        // uploads queue through documents.customer_imports_sync=false.
+        $this->postJson('/api/v1/customer-imports/'.$id.'/commit', ['version' => $b['version']])->assertOk();
         $this->assertDatabaseHas('customers', ['first_name' => 'Vista', 'source' => 'vista_express']);
     }
 

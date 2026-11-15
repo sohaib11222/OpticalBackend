@@ -25,8 +25,9 @@ class Messages
 
     public static function recipient(Customer $customer, string $channel): string
     {
-        $value = $channel === 'email' ? strtolower(trim($customer->email ?? '')) : preg_replace('/[\s().-]/', '', $customer->phone ?? '');
-        abort_unless($channel === 'email' ? filter_var($value, FILTER_VALIDATE_EMAIL) : preg_match('/^\+[1-9][0-9]{7,14}$/D', $value), 422, 'Add a valid customer email or international phone number before messaging.');
+        abort_unless($channel === 'email', 422, 'Only email messages are sent by the CRM. Use WhatsApp Web click-to-chat for WhatsApp conversations.');
+        $value = strtolower(trim($customer->email ?? ''));
+        abort_unless(filter_var($value, FILTER_VALIDATE_EMAIL), 422, 'Add a valid customer email address before messaging.');
 
         return $value;
     }
@@ -59,7 +60,7 @@ class Messages
             $template = empty($d['template_id']) ? null : MessageTemplate::where('active', true)->findOrFail($d['template_id']);
             $channel = $template?->channel ?? $d['channel'];
             $purpose = $template?->purpose ?? $d['purpose'];
-            abort_if($channel === 'whatsapp' && ! $template?->content_sid, 422, 'WhatsApp requires an approved provider template.');
+            abort_unless($channel === 'email', 422, 'SMS and automated WhatsApp sending have been retired. Use email or WhatsApp Web click-to-chat.');
             $recipient = self::recipient($c, $channel);
             abort_unless($this->recipientAllowed($c, $channel, $purpose, $recipient), 422, 'This recipient has opted out of these messages.');
             $variables = ['first_name' => $c->first_name, 'last_name' => $c->last_name, 'shop_name' => $shop->name, 'due_date' => $reminder?->due_on?->toDateString() ?? '', 'reference' => $reminder?->order?->number ?? ''];
@@ -73,12 +74,8 @@ class Messages
             $body = $render($template?->body ?? $d['body']);
             $subject = $render($template?->subject ?? $d['subject'] ?? '');
             abort_if($channel === 'email' && trim($subject) === '', 422, 'Email subject is required.');
-            $content = [];
-            foreach ($template?->content_variables ?? [] as $keyName => $variable) {
-                $content[(string) $keyName] = $variables[$variable] ?? '';
-            }
             $scheduled = ! empty($d['scheduled_at']) ? CarbonImmutable::parse($d['scheduled_at'])->utc() : CarbonImmutable::now()->addMinutes((int) ($d['delay_minutes'] ?? 0));
-            $m = CustomerMessage::create(['customer_id' => $c->id, 'public_id' => (string) Str::uuid(), 'dedupe_key' => $key, 'request_hash' => $hash, 'channel' => $channel, 'purpose' => $purpose, 'recipient' => $recipient, 'subject' => $subject, 'body' => $body, 'content_sid' => $template?->content_sid, 'content_variables' => $content, 'template_id' => $template?->id, 'reminder_id' => $reminder?->id, 'scheduled_at' => $scheduled, 'created_by' => $actor]);
+            $m = CustomerMessage::create(['customer_id' => $c->id, 'public_id' => (string) Str::uuid(), 'dedupe_key' => $key, 'request_hash' => $hash, 'channel' => $channel, 'purpose' => $purpose, 'recipient' => $recipient, 'subject' => $subject, 'body' => $body, 'content_sid' => null, 'content_variables' => null, 'template_id' => $template?->id, 'reminder_id' => $reminder?->id, 'scheduled_at' => $scheduled, 'created_by' => $actor]);
             $this->event($m, 'scheduled');
             Audit::record('message.scheduled', $shop->id, $actor, 'message', $m->id);
             $this->dispatchIfDue($m->refresh());
@@ -89,14 +86,43 @@ class Messages
 
     public function dispatchIfDue(CustomerMessage $m): void
     {
-        if (in_array($m->status, self::PENDING, true) && ! $m->scheduled_at->isFuture() && ! $m->next_attempt_at?->isFuture()) {
+        if ($m->channel === 'email' && ! $this->shouldDeliverSynchronously($m) && in_array($m->status, self::PENDING, true) && ! $m->scheduled_at->isFuture() && ! $m->next_attempt_at?->isFuture()) {
             // Only publish after the whole transaction (including a bulk batch) commits.
             SendCustomerMessage::dispatch($m->shop_id, $m->created_by, $m->id)->afterCommit();
         }
     }
 
+    /** A send-now email must not be held hostage by a delayed worker heartbeat. */
+    public function shouldDeliverSynchronously(CustomerMessage $m): bool
+    {
+        return $m->channel === 'email'
+            && (bool) config('communications.email_sync')
+            && in_array($m->status, self::PENDING, true)
+            && ! $m->scheduled_at->isFuture()
+            && ! $m->next_attempt_at?->isFuture();
+    }
+
+    /**
+     * Runs after the creating transaction has committed.  The job retains its
+     * lock/status checks, so a duplicate browser request or worker cannot send
+     * the same message twice.
+     */
+    public function deliverImmediately(CustomerMessage $m): CustomerMessage
+    {
+        if ($this->shouldDeliverSynchronously($m)) {
+            SendCustomerMessage::dispatchSync($m->shop_id, $m->created_by, $m->id);
+        } else {
+            $this->dispatchIfDue($m);
+        }
+
+        return CustomerMessage::findOrFail($m->id);
+    }
+
     public function eligible(CustomerMessage $m): ?string
     {
+        if ($m->channel !== 'email') {
+            return 'channel_retired';
+        }
         if (! Access::can('communications.send') || ! Access::can('customers.read') || ($m->reminder && ! Access::canReadReminder($m->reminder))) {
             return 'permission_revoked';
         }

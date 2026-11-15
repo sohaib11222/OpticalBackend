@@ -16,6 +16,10 @@ class WithTenant
     public function handle($job, $next)
     {
         $context = app(TenantContext::class);
+        // dispatchSync() is used for an immediate email.  It runs inside the
+        // authenticated request, so do not discard that request's tenant
+        // context when the short-lived job finishes.
+        $previous = $context->current();
         $context->clear();
         $m = ShopMembership::with(['shop', 'user', 'role.permissions'])->where('shop_id', $this->shopId)->where('user_id', $this->userId)->where('status', 'active')->first();
         if (! $m && ($admin = User::find($this->userId))?->account_type === 'admin') {
@@ -28,7 +32,7 @@ class WithTenant
         try {
             return $next($job);
         } finally {
-            $context->clear();
+            $previous ? $context->set($previous) : $context->clear();
         }
     }
 }

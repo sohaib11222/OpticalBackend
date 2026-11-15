@@ -1,47 +1,35 @@
-# Customer email, message composer and Vista publishing pages
+# Customer communication and Vista publishing pages
 
-## Diagnosis and configuration
+## Current customer-contact policy — 15 November 2026
 
-Customer messages use `config/communications.php`, not Laravel's authentication-mail transport. Credentials alone do not enable delivery. Previously, `COMMUNICATIONS_ENABLED=false` disabled email even when Aruba credentials were present; `MAIL_*` values were never used by this module. A running queue worker also retains its old configuration after `.env` edits. These are code-level findings; the current production configuration still requires the server diagnostic below.
+This release note keeps the Vista product-publication material below. Its older
+Twilio/SMS instructions are superseded by
+[Customer email and WhatsApp Web](customer-messaging-setup.md).
 
-The email channel now supports `COMMUNICATIONS_EMAIL_ENABLED=true` independently of the global Twilio/WhatsApp switch. An explicit false disables email; omitting the override preserves the global setting. Aruba-specific credentials take precedence. Standard `MAIL_*` credentials are accepted as fallback **only** when `MAIL_HOST` explicitly names `smtps.aruba.it` or `smtp.aruba.it`. Gmail settings are never used as an accidental customer sender. Readiness reports each missing/invalid setting without displaying its value.
+Customer Communication now has one CRM delivery channel: **email via Aruba
+SMTP**. Immediate mail safely runs after the request transaction commits;
+scheduled mail uses the Laravel scheduler and `communications` worker. SMS,
+Twilio callbacks and automated WhatsApp delivery are removed. Customer-table
+WhatsApp buttons use official WhatsApp Web click-to-chat and never send a
+message automatically.
 
-Configure in the **360 backend**, not either React project:
+Email setup belongs in the 360 Laravel backend. Configure
+`COMMUNICATIONS_EMAIL_ENABLED=true`, `COMMUNICATIONS_EMAIL_SYNC=true`, the
+Aruba mailbox values and public HTTPS API URL, then run
+`php artisan config:cache`, restart the 360 worker and execute
+`php artisan optical:check-messaging --smtp`. The full secure server checklist
+is maintained in the linked setup guide.
 
-```dotenv
-COMMUNICATIONS_EMAIL_ENABLED=true
-COMMUNICATIONS_PUBLIC_URL=https://api.vistaexpressbusiness.com
-ARUBA_SMTP_HOST=smtps.aruba.it
-ARUBA_SMTP_PORT=465
-ARUBA_SMTP_USERNAME=your-full-mailbox-address
-ARUBA_SMTP_PASSWORD=your-mailbox-password
-ARUBA_FROM_ADDRESS=your-authorized-mailbox-address
-ARUBA_FROM_NAME="Vista Express 360"
-```
+## Current communication workflow
 
-Keep the existing SMS/WhatsApp settings unchanged. This update requires no new migration. Refresh configuration and restart only the 360 worker group:
-
-```bash
-cd /var/www/vistaexpressbusiness/backend
-php artisan config:cache
-sudo supervisorctl restart 'vistaexpressbusiness-worker:*'
-sudo -u www-data php artisan optical:check-messaging --smtp
-sudo -u www-data php artisan optical:check-processing
-```
-
-`--smtp` connects securely and authenticates without sending an email or printing credentials. Check this **after** rebuilding configuration. Configuration-ready does not mean authenticated or delivered. The worker must consume `communications`. Immediate submissions do not depend on cron; future sends, automatic retries and reminders require the existing Laravel scheduler. Review system cron and other users before installing a duplicate schedule entry.
-
-Aruba recommends authenticated SMTP on port 465 using implicit TLS. The existing 587 STARTTLS option remains available for mailbox services supporting it; TLS and certificate validation remain required. References: [Aruba mailbox settings](https://guide.aruba.it/hosting-e-domini/email/configurazione-posta/parametri-configurazione-posta), [Symfony SMTP transport](https://symfony.com/doc/current/mailer.html).
-
-## Customer communication workflow
-
-1. Choose Email or SMS. Channel setup problems are shown before composing. Existing WhatsApp buttons continue to open the approved-template composer.
-2. Choose Immediately, a future date/time, or a positive delay. The date/time input uses the device timezone and submits an explicit UTC timestamp.
-3. Select customers. Customer-row and bulk-list shortcuts preselect the relevant records. Up to 100 recipients are allowed.
-4. Enter content and purpose, or copy an active channel-specific template. Email requires a subject; SMS does not display that field. Existing supported personalization variables remain available.
-5. Review the content, timing and recipients. Invalid addresses, archived customers, duplicate destinations and explicit opt-outs must be resolved before sending. Every recipient gets a separate message and history entry; no customer addresses are shared with other recipients.
-
-No opt-in recording step is required. Existing explicit withdrawals, STOP/unsubscribe, tenant boundaries, permissions and sender eligibility are preserved. Immediate messages are queued directly after the transaction commits. Scheduled messages wait until their chosen time. SMTP acceptance is shown as Accepted, not falsely described as inbox delivery. Uncertain provider submissions must be reconciled before a new send to avoid duplicates.
+1. Choose Email, immediate or scheduled timing, recipients, content and review.
+2. A valid email address is required. New messages require no consent record;
+   explicit email opt-outs/unsubscribes remain enforced.
+3. Bulk email is all-or-nothing and creates a separate personalized history
+   record for every recipient.
+4. `Sent` means the SMTP server accepted the email. Inbox delivery/opening is
+   not falsely claimed. Failed and uncertain outcomes remain visible for review.
+5. Use a customer WhatsApp button to open WhatsApp Web and send manually.
 
 ## Vista category source comparison
 
@@ -84,7 +72,7 @@ Local test evidence and pending production acceptance are recorded in `progress.
 
 - Messaging backend: 26 tests / 333 assertions. Final focused Aruba/processing diagnostics: 7 tests / 32 assertions (overlapping regression selection).
 - 360 integration and standalone product variations: 13 tests / 173 assertions. Original Vista integration: 13 tests / 185 assertions.
-- Browser checks: all five category create/edit round-trips in Shop and Admin; standalone variation photos/SKUs/stock; immediate bulk Email/SMS; scheduled-email validation; existing WhatsApp composer; customer/reminder/follow-up/payment/report workflows; EN/IT authorization and callback. Desktop/mobile seller-page screenshots reviewed.
+- Browser checks: all five category create/edit round-trips in Shop and Admin; standalone variation photos/SKUs/stock; immediate and scheduled email validation; WhatsApp Web click-to-chat; customer/reminder/follow-up/payment/report workflows; EN/IT authorization and callback. Desktop/mobile seller-page screenshots reviewed.
 - Final Shop and Admin TypeScript checks, focused lint, and production builds passed. Existing bundle-size and frontend Browserslist-age advisories remain.
 - Deployment shared-source copies are hash-identical for the five changed/new shared modules. No database migration is introduced in this release.
 

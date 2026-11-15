@@ -22,14 +22,15 @@ class DocumentUploads
     {
         $extension = strtolower($upload->getClientOriginalExtension());
         $mime = $upload->getMimeType();
-        if ($d['category'] !== 'document' && ! in_array($mime, ['image/png', 'image/jpeg'])) {
+        $imageOnly = in_array($d['category'], ['customer_image', 'glasses_image'], true);
+        if ($imageOnly && ! in_array($mime, ['image/png', 'image/jpeg'])) {
             throw ValidationException::withMessages(['file' => 'Customer and glasses images must be PNG or JPEG files.']);
         }
         $allowed = ['pdf' => ['application/pdf'], 'png' => ['image/png'], 'jpg' => ['image/jpeg'], 'jpeg' => ['image/jpeg'], 'txt' => ['text/plain'], 'csv' => ['text/plain', 'text/csv', 'application/csv'], 'docx' => ['application/zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'], 'xlsx' => ['application/zip', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']];
         if (! isset($allowed[$extension]) || ! in_array($mime, $allowed[$extension], true)) {
             throw ValidationException::withMessages(['file' => 'File contents do not match an allowed document format.']);
         }
-        if ($d['category'] !== 'document' && ! in_array($extension, ['png', 'jpg', 'jpeg'])) {
+        if ($imageOnly && ! in_array($extension, ['png', 'jpg', 'jpeg'])) {
             throw ValidationException::withMessages(['file' => 'Customer and glasses images must be PNG or JPEG.']);
         }
         if (in_array($extension, ['png', 'jpg', 'jpeg'])) {
@@ -45,7 +46,7 @@ class DocumentUploads
         $key = 'shops/'.app(TenantContext::class)->id().'/documents/'.Str::uuid().'.'.$extension;
         $stored = false;
         try {
-            return DB::transaction(function () use ($upload, $d, $actor, $hash, $key, $mime, &$stored) {
+            return DB::transaction(function () use ($upload, $d, $actor, $hash, $key, $mime, $imageOnly, &$stored) {
                 Shop::lockForUpdate()->findOrFail(app(TenantContext::class)->id());
                 if ($existing = PrivateFile::where('upload_key', $d['upload_key'])->first()) {
                     abort_unless(hash_equals($existing->sha256, $hash) && $existing->customer_id == ($d['customer_id'] ?? null) && $existing->optical_record_id == ($d['optical_record_id'] ?? null) && $existing->category === $d['category'] && $existing->title === $d['title'] && $existing->description === ($d['description'] ?? null), 409, 'This upload key was already used for different content or links.');
@@ -62,7 +63,7 @@ class DocumentUploads
                         abort_unless($record->kind === 'glasses', 422, 'Select a glasses record for a glasses image.');
                     }
                 }
-                if ($d['category'] !== 'document' && ! $customer) {
+                if ($imageOnly && ! $customer) {
                     throw ValidationException::withMessages(['customer_id' => 'A customer is required for private customer images.']);
                 }
                 if ($d['category'] === 'glasses_image' && empty($d['optical_record_id'])) {
@@ -122,6 +123,11 @@ class DocumentUploads
     public function queue(PrivateFile $f): void
     {
         if (in_array($f->scan_status, ['pending', 'failed']) && ! $f->archived_at) {
+            if (config('documents.private_files_sync')) {
+                $this->process($f);
+
+                return;
+            }
             try {
                 ScanPrivateFile::dispatch($f->shop_id, $f->uploaded_by, $f->id)->afterCommit();
             } catch (\Throwable $e) {
@@ -129,5 +135,27 @@ class DocumentUploads
                 report($e);
             }
         }
+    }
+
+    /**
+     * Synchronously scan ordinary customer documents with exactly the same
+     * job handler and validation as the worker path.  Failures are persisted
+     * on the file so the UI can offer a clear retry instead of leaving a
+     * permanent pending badge.
+     */
+    public function process(PrivateFile $f): PrivateFile
+    {
+        if (! in_array($f->scan_status, ['pending', 'failed']) || $f->archived_at) {
+            return $f->fresh();
+        }
+
+        try {
+            (new ScanPrivateFile($f->shop_id, $f->uploaded_by, $f->id))
+                ->handle(app(FileScanner::class));
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return PrivateFile::withoutGlobalScope('shop')->findOrFail($f->id);
     }
 }

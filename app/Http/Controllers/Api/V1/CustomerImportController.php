@@ -25,13 +25,25 @@ class CustomerImportController extends Controller
     {
         $data = $b->toArray();
         try {
-            ProcessCustomerImport::dispatch($b->shop_id, $actor, $b->id, $b->version)->afterCommit();
+            if (config('documents.customer_imports_sync')) {
+                // The request already has a verified tenant context. Calling
+                // the existing job handler directly avoids a queue driver's
+                // after-commit semantics (and a delayed worker heartbeat)
+                // while retaining its permission, version and idempotency
+                // checks. Large-import installations can opt back into the
+                // named uploads queue below.
+                (new ProcessCustomerImport($b->shop_id, $actor, $b->id, $b->version))
+                    ->handle(app(CustomerImports::class));
+            } else {
+                ProcessCustomerImport::dispatch($b->shop_id, $actor, $b->id, $b->version)->afterCommit();
+            }
         } catch (\Throwable $e) {
             $b->forceFill(['status' => 'failed', 'last_error' => 'Processing could not be started. Check the upload worker and retry this import.'])->save();
-            $data = $b->toArray();
+            report($e);
         }
+        $data = $b->fresh()->toArray();
 
-        return response()->json(['data' => $data], 202);
+        return response()->json(['data' => $data], config('documents.customer_imports_sync') ? 200 : 202);
     }
 
     public function index(Request $r)

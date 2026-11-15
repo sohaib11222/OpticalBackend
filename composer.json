@@ -15,8 +15,7 @@
         "laravel/tinker": "^2.10.1",
         "phpoffice/phpspreadsheet": "^5.10",
         "symfony/intl": "^7.4",
-        "symfony/polyfill-intl-icu": "^1.43",
-        "twilio/sdk": "^8.13"
+        "symfony/polyfill-intl-icu": "^1.43"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",

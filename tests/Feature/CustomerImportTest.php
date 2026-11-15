@@ -36,6 +36,9 @@ class CustomerImportTest extends TestCase
         parent::setUp();
         Queue::fake();
         Storage::fake('private');
+        // The legacy scenarios below deliberately exercise the queued path.
+        // Production defaults to direct scan/parse for ordinary CSV imports.
+        config(['documents.private_files_sync' => false, 'documents.customer_imports_sync' => false]);
         $this->owner = $this->owner('import@example.test');
         $this->login($this->owner);
     }
@@ -60,7 +63,7 @@ class CustomerImportTest extends TestCase
 
     private function upload(string $bytes, string $name = 'customers.csv', bool $scan = true): int
     {
-        $id = $this->postJson('/api/v1/documents', ['file' => UploadedFile::fake()->createWithContent($name, $bytes), 'title' => 'Import source', 'category' => 'document', 'upload_key' => (string) Str::uuid()])->assertStatus(202)->json('data.id');
+        $id = $this->postJson('/api/v1/documents', ['file' => UploadedFile::fake()->createWithContent($name, $bytes), 'title' => 'Import source', 'category' => 'document', 'upload_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
         if ($scan) {
             $scanner = new class implements FileScanner
             {
@@ -88,6 +91,25 @@ class CustomerImportTest extends TestCase
         $this->job($b);
 
         return $this->getJson('/api/v1/customer-imports/'.$b['id'])->assertOk()->json('data');
+    }
+
+    public function test_clean_csv_can_scan_and_parse_synchronously_without_waiting_for_a_worker(): void
+    {
+        config(['documents.private_files_sync' => true, 'documents.customer_imports_sync' => true]);
+        app()->instance(FileScanner::class, new class implements FileScanner
+        {
+            public function scan($stream): bool { return true; }
+        });
+
+        $file = $this->postJson('/api/v1/documents', [
+            'file' => UploadedFile::fake()->createWithContent('customers.csv', "First,Last\nDirect,Import\n"),
+            'title' => 'Direct import source', 'category' => 'document', 'upload_key' => (string) Str::uuid(),
+        ])->assertCreated()->assertJsonPath('data.scan_status', 'clean')->json('data.id');
+
+        $this->postJson('/api/v1/customer-imports', ['file_id' => $file, 'delimiter' => ','])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'mapping');
+        Queue::assertNothingPushed();
     }
 
     private function preview(array $b, array $map, array $extra = []): array

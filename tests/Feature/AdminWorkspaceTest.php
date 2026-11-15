@@ -93,7 +93,10 @@ class AdminWorkspaceTest extends TestCase
         $this->getJson('/api/v1/uploads/processing')->assertOk()->assertJsonPath('data.worker_active', false);
         Event::dispatch(new Looping('database', 'uploads,integrations'));
         $this->getJson('/api/v1/uploads/processing')->assertOk()->assertJsonPath('data.worker_active', true);
-        Cache::put('optical:worker-heartbeat:database:uploads', time() - 100, 120);
+        // Long CSV/XLSX parsing can legitimately leave a worker between loop
+        // heartbeats for several minutes; QueueHealth deliberately uses a
+        // 360-second window to avoid a false "worker stopped" warning.
+        Cache::put('optical:worker-heartbeat:database:uploads', time() - 400, 420);
         $this->getJson('/api/v1/uploads/processing')->assertOk()->assertJsonPath('data.worker_active', false);
     }
 }

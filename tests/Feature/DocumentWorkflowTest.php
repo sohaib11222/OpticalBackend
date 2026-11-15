@@ -28,13 +28,30 @@ class DocumentWorkflowTest extends TestCase
         parent::setUp();
         Queue::fake();
         Storage::fake('private');
+        // Existing worker-path tests deliberately exercise the optional
+        // asynchronous mode. Production defaults to direct scanning so a
+        // healthy file does not remain pending after upload.
+        config(['documents.private_files_sync' => false]);
         $this->owner = $this->owner('documents@example.test');
         $this->login($this->owner);
     }
 
+    public function test_private_upload_can_complete_synchronously_without_a_pending_state(): void
+    {
+        config(['documents.private_files_sync' => true]);
+        app()->instance(FileScanner::class, new class implements FileScanner
+        {
+            public function scan($stream): bool { return true; }
+        });
+
+        $response = $this->upload()->assertCreated()->assertJsonPath('data.scan_status', 'clean');
+        $this->get('/api/v1/private-files/'.$response->json('data.id'))->assertOk()->assertDownload('visit.txt');
+        Queue::assertNothingPushed();
+    }
+
     public function test_interrupted_scan_marks_failed_without_touching_other_tenants_or_clean_files(): void
     {
-        $file = $this->upload()->assertStatus(202)->json('data');
+        $file = $this->upload()->assertCreated()->json('data');
         $shop = $this->owner->memberships()->first()->shop_id;
         (new ScanPrivateFile($shop + 999, $this->owner->id, $file['id']))->failed(new \RuntimeException('timeout'));
         $this->getJson('/api/v1/documents/'.$file['id'])->assertJsonPath('data.scan_status', 'pending');
@@ -90,7 +107,7 @@ class DocumentWorkflowTest extends TestCase
     public function test_private_upload_is_quarantined_then_scanned_downloadable_and_archivable(): void
     {
         $customer = $this->postJson('/api/v1/customers', ['first_name' => 'Document', 'last_name' => 'Customer', 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
-        $r = $this->upload(['customer_id' => $customer])->assertStatus(202)->assertJsonPath('data.scan_status', 'pending');
+        $r = $this->upload(['customer_id' => $customer])->assertCreated()->assertJsonPath('data.scan_status', 'pending');
         $id = $r->json('data.id');
         $this->assertArrayNotHasKey('storage_key', $r->json('data'));
         Queue::assertPushed(ScanPrivateFile::class);
@@ -107,7 +124,7 @@ class DocumentWorkflowTest extends TestCase
 
     public function test_failed_or_rejected_scans_never_release_private_files(): void
     {
-        $id = $this->upload()->assertStatus(202)->json('data.id');
+        $id = $this->upload()->assertCreated()->json('data.id');
         try {
             $this->scan($id, true, true);
             $this->fail('Scanner failure should throw.');
@@ -116,7 +133,7 @@ class DocumentWorkflowTest extends TestCase
         }
         $this->getJson('/api/v1/documents/'.$id)->assertJsonPath('data.scan_status', 'failed');
         $this->getJson('/api/v1/private-files/'.$id)->assertConflict();
-        $this->postJson('/api/v1/documents/'.$id.'/rescan')->assertStatus(202);
+        $this->postJson('/api/v1/documents/'.$id.'/rescan')->assertOk();
         $this->scan($id, false);
         $this->getJson('/api/v1/private-files/'.$id)->assertConflict();
         $this->getJson('/api/v1/documents/'.$id)->assertJsonPath('data.scan_status', 'rejected');
@@ -128,7 +145,7 @@ class DocumentWorkflowTest extends TestCase
         $this->upload(['file' => UploadedFile::fake()->createWithContent('fake.png', 'This is not an image')])->assertUnprocessable();
         $this->upload(['file' => UploadedFile::fake()->createWithContent('payload.php', '<?php echo 1;')])->assertUnprocessable();
         $this->upload(['category' => 'customer_image'])->assertUnprocessable()->assertJsonValidationErrors('file');
-        $id = $this->upload(['file' => UploadedFile::fake()->image('frame.png', 60, 60)])->assertStatus(202)->json('data.id');
+        $id = $this->upload(['file' => UploadedFile::fake()->image('frame.png', 60, 60)])->assertCreated()->json('data.id');
         $this->scan($id);
         $this->get('/api/v1/documents/'.$id.'/preview')->assertOk()->assertHeader('Content-Type', 'image/png');
         $this->login($this->owner('foreign@example.test'));
@@ -143,8 +160,8 @@ class DocumentWorkflowTest extends TestCase
     public function test_upload_retries_do_not_duplicate_and_metadata_cannot_change_reused_key(): void
     {
         $key = (string) Str::uuid();
-        $id = $this->upload(['upload_key' => $key])->assertStatus(202)->json('data.id');
-        $this->upload(['upload_key' => $key])->assertStatus(202)->assertJsonPath('data.id', $id);
+        $id = $this->upload(['upload_key' => $key])->assertCreated()->json('data.id');
+        $this->upload(['upload_key' => $key])->assertCreated()->assertJsonPath('data.id', $id);
         $this->upload(['upload_key' => $key, 'title' => 'Different'])->assertConflict();
         $this->assertDatabaseCount('private_files', 1);
     }
@@ -153,7 +170,7 @@ class DocumentWorkflowTest extends TestCase
     {
         $customer = $this->postJson('/api/v1/customers', ['first_name' => 'Glasses', 'last_name' => 'Customer', 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
         $record = $this->postJson('/api/v1/customers/'.$customer.'/optical/glasses', ['recorded_on' => '2026-01-01', 'practitioner' => 'Synthetic Optician', 'data' => ['brand' => 'Test', 'model' => 'Frame', 'color' => 'Blue'], 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');
-        $file = $this->upload(['file' => UploadedFile::fake()->image('glasses.png', 60, 60), 'category' => 'glasses_image', 'customer_id' => $customer, 'optical_record_id' => $record])->assertStatus(202)->json('data.id');
+        $file = $this->upload(['file' => UploadedFile::fake()->image('glasses.png', 60, 60), 'category' => 'glasses_image', 'customer_id' => $customer, 'optical_record_id' => $record])->assertCreated()->json('data.id');
         $this->scan($file);
         $this->getJson('/api/v1/documents?customer_id='.$customer.'&optical_record_id='.$record)->assertJsonCount(1, 'data');
         $other = $this->postJson('/api/v1/customers', ['first_name' => 'Other', 'last_name' => 'Customer', 'creation_key' => (string) Str::uuid()])->assertCreated()->json('data.id');

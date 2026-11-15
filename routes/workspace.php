@@ -138,4 +138,14 @@ Route::post('communications/messages/{id}/{action}', [\App\Http\Controllers\Api\
 Route::get('customers/{customer}/consents', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'consents'])->whereNumber('customer');
 Route::post('customers/{customer}/consents', [\App\Http\Controllers\Api\V1\CommunicationController::class, 'consent'])->whereNumber('customer');
 
+Route::get('support/tickets', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'index']);
+Route::post('support/tickets', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'store']);
+Route::get('support/tickets/{id}', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'show'])->whereNumber('id');
+Route::post('support/tickets/{id}/messages', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'reply'])->whereNumber('id');
+Route::patch('support/tickets/{id}/status', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'status'])->whereNumber('id');
+Route::post('support/tickets/{id}/attachments', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'attachment'])->whereNumber('id')->middleware('throttle:uploads');
+Route::get('support/tickets/{id}/attachments/{attachment}', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'download'])->whereNumber(['id', 'attachment']);
+Route::get('support/notifications', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'notifications']);
+Route::post('support/notifications/{notification}/read', [\App\Http\Controllers\Api\V1\SupportTicketController::class, 'readNotification'])->whereNumber('notification');
+
 Route::get('record-output/{module}', [\App\Http\Controllers\Api\V1\RecordOutputController::class, 'output'])->whereIn('module', ['customers', 'products', 'stock', 'orders', 'agenda', 'optical', 'files', 'payments', 'audit']);

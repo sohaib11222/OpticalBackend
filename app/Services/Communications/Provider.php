@@ -4,8 +4,7 @@ namespace App\Services\Communications;
 
 use App\Models\CustomerMessage;
 use App\Models\Shop;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
 use Symfony\Component\Mime\Address;
@@ -16,19 +15,19 @@ class Provider
     public function ready(string $channel): bool
     {
         if ($channel === 'email') return $this->emailIssues() === [];
-        if (! in_array($channel, ['sms', 'whatsapp'], true) || ! config('communications.enabled')) return false;
-
-        $service = preg_match('/^MG[0-9a-f]{32}$/i', config('communications.twilio.messaging_service_sid', '') ?? '');
-        $sender = preg_match('/^\+[1-9][0-9]{7,14}$/D', config('communications.twilio.sms_from', '') ?? '');
-        if ($channel === 'sms' && config('communications.twilio.messaging_service_sid') && ! $service) return false;
-        return (bool) (preg_match('/^AC[0-9a-f]{32}$/i', config('communications.twilio.account_sid', '') ?? '') && config('communications.twilio.auth_token') && ($channel === 'sms' ? ($service || $sender) : ($service && config('communications.twilio.whatsapp_from'))) && str_starts_with(config('communications.public_url', ''), 'https://'));
+        // WhatsApp is intentionally browser-only click-to-chat and SMS has
+        // been retired.  Neither channel may ever be sent by the backend.
+        return false;
     }
 
     /** Safe diagnostics: names of missing settings, never credential values. */
     public function emailIssues(): array
     {
         $issues = [];
-        if (! (config('communications.email_enabled') ?? config('communications.enabled'))) $issues[] = 'Enable COMMUNICATIONS_EMAIL_ENABLED=true (or COMMUNICATIONS_ENABLED=true).';
+        // `null` is treated as the default enabled state. This also keeps
+        // a long-running worker safe when an old cached configuration has no
+        // explicit key yet; only an intentional boolean false disables mail.
+        if (config('communications.email_enabled') === false) $issues[] = 'Enable COMMUNICATIONS_EMAIL_ENABLED=true.';
         foreach (['username' => 'ARUBA_SMTP_USERNAME', 'password' => 'ARUBA_SMTP_PASSWORD'] as $key => $env) {
             if (! config('communications.aruba.'.$key)) $issues[] = 'Missing '.$env.'.';
         }
@@ -51,11 +50,6 @@ class Provider
         return $transport;
     }
 
-    public function callback(string $uuid): string
-    {
-        return config('communications.public_url').'/api/v1/communications/callback/'.$uuid;
-    }
-
     public function send(CustomerMessage $m): array
     {
         if (! $this->ready($m->channel)) {
@@ -68,72 +62,39 @@ class Provider
             $email->getHeaders()->addIdHeader('Message-ID', $m->public_id.'@'.explode('@', $settings['from_address'])[1]);
             try {
                 $this->deliverEmail($email, $transport);
+            } catch (TransportExceptionInterface $e) {
+                // SMTP 5xx/authentication/recipient failures happen before a
+                // provider accepts the message, so they are safe to surface
+                // as a retryable failure.  Do not expose Aruba's raw response
+                // because it may contain mailbox or infrastructure details.
+                $diagnostic = strtolower($e->getMessage());
+                if (preg_match('/\\b5\\d{2}\\b|authentication|auth(?:entication)? failed|invalid recipient|recipient address|mailbox/i', $diagnostic)) {
+                    throw new DeliveryFailure('failed', 'smtp_rejected', 'Aruba rejected this email. Check the recipient address and SMTP sender configuration, then retry.');
+                }
+
+                throw new DeliveryFailure('retry_wait', 'smtp_temporary_unavailable', 'Aruba is temporarily unavailable. The CRM will retry this email automatically.');
             } catch (\Throwable $e) {
+                // A connection can fail after SMTP has accepted DATA.  Treat
+                // that ambiguous state conservatively to avoid duplicate mail.
                 throw new DeliveryFailure('uncertain', 'smtp_submission_unknown', 'Email submission could not be confirmed. Check the mailbox/provider before trying again.');
             }
 
-            return ['status' => 'accepted', 'provider_id' => 'smtp:'.$m->public_id];
-        }
-        $data = ['To' => ($m->channel === 'whatsapp' ? 'whatsapp:' : '').$m->recipient, 'StatusCallback' => $this->callback($m->public_id)];
-        if (config('communications.twilio.messaging_service_sid')) $data['MessagingServiceSid'] = config('communications.twilio.messaging_service_sid');
-        if ($m->channel === 'whatsapp') {
-            $data += ['From' => config('communications.twilio.whatsapp_from'), 'ContentSid' => $m->content_sid, 'ContentVariables' => json_encode((object) $m->content_variables)];
-        } else {
-            $data['Body'] = $m->body;
-            if (config('communications.twilio.sms_from')) {
-                $data['From'] = config('communications.twilio.sms_from');
-            }
-        }
-        try {
-            $response = $this->client()->asForm()->post($this->base().'/Messages.json', $data);
-        } catch (\Throwable $e) {
-            throw new DeliveryFailure('uncertain', 'submission_unknown', 'Provider submission could not be confirmed. Reconcile before sending another message.');
-        }
-        if ($response->status() === 429) {
-            throw new DeliveryFailure('retry_wait', 'provider_throttled', 'Provider rate limit reached. A safe retry is scheduled.');
-        }
-        if ($response->serverError()) {
-            throw new DeliveryFailure('uncertain', 'provider_unavailable', 'Provider submission could not be confirmed. Reconcile before sending another message.');
-        }
-        if ((int) $response->json('code') === 21610) {
-            DB::table('messaging_suppressions')->updateOrInsert(['channel' => $m->channel, 'recipient_hash' => Messages::recipientHash($m->recipient)], ['created_at' => now()]);
-        }
-        if (! $response->successful()) {
-            throw new DeliveryFailure('failed', 'twilio_'.(int) $response->json('code'), 'Provider rejected the request. Check sender, recipient and template configuration.');
-        }
-        $sid = $response->json('sid');
-        if (! is_string($sid) || ! preg_match('/^(SM|MM)[a-f0-9]{32}$/i', $sid)) {
-            throw new DeliveryFailure('uncertain', 'invalid_provider_response', 'Provider acceptance could not be verified.');
+            // SMTP has accepted the message.  This is the strongest delivery
+            // acknowledgement SMTP can give; mailbox-open tracking is not
+            // claimed as delivered.
+            return ['status' => 'sent', 'provider_id' => 'smtp:'.$m->public_id];
         }
 
-        return ['status' => 'accepted', 'provider_id' => $sid];
+        throw new DeliveryFailure('cancelled', 'channel_retired', 'SMS and automated WhatsApp delivery are not available. Use WhatsApp Web click-to-chat instead.');
     }
 
     public function poll(CustomerMessage $m): ?array
     {
-        if ($m->channel === 'email' || ! $m->provider_id || ! $this->ready($m->channel)) {
-            return null;
-        }
-        try {
-            $r = $this->client()->get($this->base().'/Messages/'.rawurlencode($m->provider_id).'.json');
-
-            return $r->successful() ? ['status' => $r->json('status'), 'code' => $r->json('error_code')] : null;
-        } catch (\Throwable $e) {
-            return null;
-        }
+        return null;
     }
 
     protected function deliverEmail(Email $email, EsmtpTransport $transport): void
     {
         (new Mailer($transport))->send($email);
-    }
-    private function base(): string
-    {
-        return 'https://api.twilio.com/2010-04-01/Accounts/'.config('communications.twilio.account_sid');
-    }
-
-    private function client()
-    {
-        return Http::withBasicAuth(config('communications.twilio.account_sid'), config('communications.twilio.auth_token'))->connectTimeout(5)->timeout(20);
     }
 }

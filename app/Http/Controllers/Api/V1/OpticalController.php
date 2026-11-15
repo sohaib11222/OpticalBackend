@@ -68,6 +68,25 @@ class OpticalController extends Controller
 
     private function validateRecord(Request $r, string $kind, bool $editing = false): array
     {
+        // Older clients submitted the dictionary values beside `data`, while
+        // newer forms submit a JSON string in multipart-style requests.  The
+        // record contract is always a JSON/object array; normalize both safe
+        // legacy shapes before applying the dictionary rules.
+        $data = $r->input('data');
+        if (is_string($data)) {
+            $decoded = json_decode($data, true);
+            $data = json_last_error() === JSON_ERROR_NONE && is_array($decoded) ? $decoded : $data;
+        }
+        if (! is_array($data)) {
+            $data = [];
+            foreach (array_keys(OpticalDictionary::fields($kind)) as $field) {
+                if ($r->has($field)) {
+                    $data[$field] = $r->input($field);
+                }
+            }
+        }
+        $r->merge(['data' => $data]);
+
         return $r->validate([...OpticalDictionary::rules($kind), 'recorded_on' => 'required|date_format:Y-m-d|before_or_equal:today', 'practitioner' => 'required|string|max:150', 'prescription_id' => 'nullable|integer|min:1', 'source_record_id' => 'nullable|integer|min:1', 'creation_key' => $editing ? 'prohibited' : 'required|uuid', 'version' => $editing ? 'required|integer|min:1' : 'prohibited', 'shop_id' => 'prohibited', 'customer_id' => 'prohibited', 'status' => 'prohibited', 'finalized_by' => 'prohibited']);
     }
 

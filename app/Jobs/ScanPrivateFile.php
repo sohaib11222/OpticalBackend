@@ -47,8 +47,9 @@ class ScanPrivateFile implements ShouldQueue
 
     public function handle(FileScanner $scanner): void
     {
-        abort_unless(app(TenantContext::class)->membership()->can('files.write'), 403);
         $file = PrivateFile::findOrFail($this->fileId);
+        $membership = app(TenantContext::class)->membership();
+        abort_unless($membership->can('files.write') || ($file->category === 'support_ticket' && ($membership->can('support.create') || $membership->can('support.reply'))), 403);
         if (in_array($file->scan_status, ['clean', 'rejected']) || $file->archived_at) {
             return;
         }

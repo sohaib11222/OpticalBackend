@@ -12,7 +12,7 @@ class AccessCatalog
 
     public const ACTIONS = ['create', 'edit', 'archive', 'print', 'export'];
 
-    public const NEW_PERMISSIONS = ['employees.read', 'employees.manage', 'audit.read', 'audit.export', 'audit.print', 'operations.read', 'reminders.read', 'reminders.write', 'followups.read', 'followups.write', 'communications.read', 'communications.send', 'communications.manage', 'payments.read', 'payments.write', 'payments.reverse', 'payments.print', 'payments.export'];
+    public const NEW_PERMISSIONS = ['employees.read', 'employees.manage', 'audit.read', 'audit.export', 'audit.print', 'operations.read', 'reminders.read', 'reminders.write', 'followups.read', 'followups.write', 'communications.read', 'communications.send', 'communications.manage', 'payments.read', 'payments.write', 'payments.reverse', 'payments.print', 'payments.export', 'support.read', 'support.create', 'support.reply', 'support.manage'];
 
     public static function additions(): array
     {
@@ -31,11 +31,11 @@ class AccessCatalog
         $common = ['shop.view', 'operations.read'];
 
         return [
-            'optometrist' => [...$common, 'customers.read', 'optical.read', 'optical.write', 'optical.create', 'optical.edit', 'optical.finalize', 'optical.print', 'agenda.read', 'agenda.write', 'agenda.create', 'agenda.edit', 'agenda.archive', 'reminders.read', 'reminders.write', 'followups.read', 'communications.read', 'communications.send'],
-            'salesperson' => [...$common, 'customers.read', 'products.read', 'stock.read', 'orders.read', 'reminders.read'],
-            'cashier' => [...$common, 'customers.read', 'products.read', 'orders.read', 'orders.write', 'orders.create', 'orders.edit', 'orders.fulfil', 'orders.print', 'reports.read', 'payments.read', 'payments.write', 'payments.print', 'reminders.read'],
-            'warehouse' => [...$common, 'products.read', 'stock.read', 'stock.write', 'stock.create', 'stock.edit', 'stock.print', 'orders.read', 'reminders.read'],
-            'store_administrator' => [...$common, 'customers.read', 'products.read', 'orders.read', 'agenda.read', 'files.read', 'reminders.read', 'followups.read', 'communications.read'],
+            'optometrist' => [...$common, 'customers.read', 'optical.read', 'optical.write', 'optical.create', 'optical.edit', 'optical.finalize', 'optical.print', 'agenda.read', 'agenda.write', 'agenda.create', 'agenda.edit', 'agenda.archive', 'reminders.read', 'reminders.write', 'followups.read', 'communications.read', 'communications.send', 'support.read', 'support.create', 'support.reply'],
+            'salesperson' => [...$common, 'customers.read', 'products.read', 'stock.read', 'orders.read', 'reminders.read', 'support.read', 'support.create', 'support.reply'],
+            'cashier' => [...$common, 'customers.read', 'products.read', 'orders.read', 'orders.write', 'orders.create', 'orders.edit', 'orders.fulfil', 'orders.print', 'reports.read', 'payments.read', 'payments.write', 'payments.print', 'reminders.read', 'support.read', 'support.create', 'support.reply'],
+            'warehouse' => [...$common, 'products.read', 'stock.read', 'stock.write', 'stock.create', 'stock.edit', 'stock.print', 'orders.read', 'reminders.read', 'support.read', 'support.create', 'support.reply'],
+            'store_administrator' => [...$common, 'customers.read', 'products.read', 'orders.read', 'agenda.read', 'files.read', 'reminders.read', 'followups.read', 'communications.read', 'support.read', 'support.create', 'support.reply', 'support.manage'],
         ];
     }
 

@@ -44,10 +44,14 @@ Route::middleware('web')->prefix('v1')->group(function () {
         Route::get('overview', [AdminController::class, 'overview']);
         Route::get('shops', [AdminController::class, 'shops']);
         Route::patch('shops/{shop}/status', [AdminController::class, 'status']);
+        Route::get('support/tickets', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'index']);
+        Route::get('support/tickets/{id}', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'show'])->whereNumber('id');
+        Route::patch('support/tickets/{id}', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'update'])->whereNumber('id');
+        Route::post('support/tickets/{id}/messages', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'reply'])->whereNumber('id');
+        Route::get('support/tickets/{id}/attachments/{attachment}', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'download'])->whereNumber(['id', 'attachment']);
+        Route::get('support/administrators', [\App\Http\Controllers\Api\V1\AdminSupportTicketController::class, 'administrators']);
     });
 });
 
-Route::post('v1/communications/callback/{uuid}', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'status'])->whereUuid('uuid')->middleware('throttle:120,1');
 Route::post('v1/integrations/vista/subscription-webhook', \App\Http\Controllers\Api\V1\VistaSubscriptionWebhookController::class)->middleware('throttle:120,1');
-Route::post('v1/communications/inbound', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'inbound'])->middleware('throttle:120,1');
 Route::match(['get', 'post'], 'v1/communications/preferences/{uuid}/{hash}', [\App\Http\Controllers\Api\V1\CommunicationWebhookController::class, 'preferences'])->whereUuid('uuid')->middleware('throttle:30,1');

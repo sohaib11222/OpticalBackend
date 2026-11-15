@@ -62,13 +62,12 @@ class RunCustomerOperations extends Command
                         }
                     }
                     CustomerMessage::where('status', 'sending')->where('lease_until', '<', now())->update(['status' => 'uncertain', 'error_code' => 'worker_interrupted', 'error_message' => 'Submission was interrupted. Reconcile with the provider; automatic resend is disabled.']);
-                    foreach (CustomerMessage::whereIn('status', ['accepted', 'sent'])->where('channel', '!=', 'email')->where('updated_at', '<', now()->subMinutes(5))->limit(100)->get() as $m) {
-                        if ($status = app(Provider::class)->poll($m)) {
-                            app(Messages::class)->providerStatus($m, $status['status'] ?? '', isset($status['code']) ? (string) $status['code'] : null);
-                        }
-                        $m->touch();
-                    }
-                    foreach (CustomerMessage::whereIn('status', Messages::PENDING)->where('scheduled_at', '<=', now())->where(fn ($q) => $q->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now()))->limit(100)->get() as $m) {
+                    // Retired channels are retained for audit history but
+                    // must never be submitted after this release.
+                    CustomerMessage::whereIn('channel', ['sms', 'whatsapp'])
+                        ->whereIn('status', Messages::PENDING)
+                        ->update(['status' => 'cancelled', 'error_code' => 'channel_retired', 'error_message' => 'SMS and automated WhatsApp delivery were retired.']);
+                    foreach (CustomerMessage::where('channel', 'email')->whereIn('status', Messages::PENDING)->where('scheduled_at', '<=', now())->where(fn ($q) => $q->whereNull('next_attempt_at')->orWhere('next_attempt_at', '<=', now()))->limit(100)->get() as $m) {
                         SendCustomerMessage::dispatch($owner->shop_id, $m->created_by, $m->id);
                     }
                 });

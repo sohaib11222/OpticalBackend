@@ -54,10 +54,14 @@ class DocumentController extends Controller
         $this->permit('write');
         $d = $r->validate(['file' => 'required|file|max:10240', 'title' => 'required|string|max:255', 'description' => 'nullable|string|max:2000', 'category' => 'required|in:document,customer_image,glasses_image', 'customer_id' => 'nullable|integer|min:1', 'optical_record_id' => 'nullable|integer|min:1|required_if:category,glasses_image', 'upload_key' => 'required|uuid', 'shop_id' => 'prohibited', 'scan_status' => 'prohibited']);
         $f = $uploads->upload($r->file('file'), $d, $r->user()->id);
-        $result = $f->toArray();
         $uploads->queue($f);
+        $result = $f->fresh();
 
-        return response()->json(['data' => $result], 202);
+        // Return the stored status even when a scan fails.  A 5xx response
+        // makes clients discard the file record and leaves the user with a
+        // misleading perpetual "pending" state instead of a clear retryable
+        // failure.
+        return response()->json(['data' => $result], 201);
     }
 
     public function retry(DocumentUploads $uploads, int $id)
@@ -65,10 +69,10 @@ class DocumentController extends Controller
         $this->permit('write');
         $f = PrivateFile::findOrFail($id);
         abort_unless(in_array($f->scan_status, ['pending', 'failed']) && ! $f->archived_at, 409, 'This file cannot be rescanned.');
-        $result = $f->toArray();
         $uploads->queue($f);
+        $result = $f->fresh();
 
-        return response()->json(['data' => $result], 202);
+        return response()->json(['data' => $result]);
     }
 
     public function archive(Request $r, int $id)

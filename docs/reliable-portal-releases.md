@@ -66,7 +66,7 @@ A different index means wrong document root or stale cache; a missing/different 
 ## Authenticated acceptance still required
 
 - Refresh Shop and Admin separately; verify public release.json and latest HTML. An already-open tab keeps its loaded JavaScript until refreshed.
-- In Admin select a shop workspace, then an active saved customer. SMS/email/WhatsApp actions require both communications.read and communications.send. Bulk actions need customers selected; missing contact addresses disable the relevant button. Unsaved customer forms cannot send to a record that does not exist. Do not remove permissions to make buttons appear.
+- In Admin select a shop workspace, then an active saved customer. Email and WhatsApp Web actions require both communications.read and communications.send. Bulk delivery is email-only; missing email addresses disable that action. WhatsApp opens browser click-to-chat and does not send automatically. Unsaved customer forms cannot send to a record that does not exist. Do not remove permissions to make buttons appear.
 - In Shop verify the same customer actions, wizard steps, immediate email, and one scheduled email after scheduler recovery.
 - In Vista sign-in inspect the address bar: original Vista serves that page. Confirm CSS/image 200, EN/IT switching and successful callback. For fully local verification, use isolated local backend configuration; do not repoint the production integration.
 - SMTP authentication is verified by the supplied production diagnostic. Inbox receipt and authenticated live workflows remain pending; no customer messages were sent during this deployment investigation.

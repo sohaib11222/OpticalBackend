@@ -18,7 +18,6 @@ use App\Services\Operations\ReminderPlanner;
 use App\Tenancy\TenantContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\Rule;
 
 class CommunicationController extends Controller
 {
@@ -28,7 +27,7 @@ class CommunicationController extends Controller
         Access::require('customers.read');
         return $r->validate([
             'customer_ids' => 'required|array|min:1|max:100', 'customer_ids.*' => 'required|integer|min:1|distinct',
-            'channel' => 'required|in:sms,email', 'purpose' => 'required|in:service,marketing',
+            'channel' => 'required|in:email', 'purpose' => 'required|in:service,marketing',
             'subject' => 'required_if:channel,email|nullable|string|max:200', 'body' => 'required|string|max:4000',
             'scheduled_at' => 'nullable|date|after_or_equal:now', 'delay_minutes' => 'nullable|integer|min:0|max:525600',
             'creation_key' => 'required|uuid',
@@ -43,14 +42,16 @@ class CommunicationController extends Controller
     public function bulkSend(Request $r, \App\Services\Communications\BulkMessages $bulk)
     {
         $batch = $bulk->send($this->bulkData($r), $r->user()->id);
-        return response()->json(['data' => $batch, 'messages' => CustomerMessage::whereIn('id', $batch->message_ids)->get()], 201);
+        $messages = CustomerMessage::whereIn('id', $batch->message_ids)->get();
+        $messages = $messages->map(fn (CustomerMessage $message) => app(Messages::class)->deliverImmediately($message));
+        return response()->json(['data' => $batch, 'messages' => $messages], 201);
     }
 
     public function readiness(Provider $provider)
     {
         Access::require('communications.read');
 
-        return ['data' => ['sms' => $provider->ready('sms'), 'whatsapp' => $provider->ready('whatsapp'), 'email' => $provider->ready('email'), 'email_issues' => $provider->emailIssues(), 'variables' => Messages::VARIABLES, 'processing' => OperationsHealth::status()]];
+        return ['data' => ['email' => $provider->ready('email'), 'email_issues' => $provider->emailIssues(), 'immediate_email' => (bool) config('communications.email_sync'), 'variables' => Messages::VARIABLES, 'processing' => OperationsHealth::status()]];
     }
 
     public function templates()
@@ -63,12 +64,9 @@ class CommunicationController extends Controller
     public function saveTemplate(Request $r, ?int $id = null)
     {
         Access::require('communications.manage');
-        $d = $r->validate(['name' => 'required|string|max:120', 'channel' => 'required|in:sms,whatsapp,email', 'purpose' => 'required|in:service,marketing', 'subject' => 'required_if:channel,email|nullable|string|max:200', 'body' => 'required|string|max:4000', 'content_sid' => ['required_if:channel,whatsapp', 'nullable', 'regex:/^HX[0-9a-fA-F]{32}$/D'], 'content_variables' => 'nullable|array|max:20', 'content_variables.*' => [Rule::in(Messages::VARIABLES)], 'active' => 'required|boolean', 'version' => $id ? 'required|integer|min:1' : 'prohibited']);
+        $d = $r->validate(['name' => 'required|string|max:120', 'channel' => 'required|in:email', 'purpose' => 'required|in:service,marketing', 'subject' => 'required|string|max:200', 'body' => 'required|string|max:4000', 'active' => 'required|boolean', 'version' => $id ? 'required|integer|min:1' : 'prohibited']);
         preg_match_all('/\{\{\s*([^{}]*?)\s*\}\}/', ($d['subject'] ?? '').$d['body'], $matches);
         abort_if(array_diff($matches[1], Messages::VARIABLES), 422, 'Unknown template variable.');
-        foreach (array_keys($d['content_variables'] ?? []) as $key) {
-            abort_unless(preg_match('/^[1-9][0-9]?$/D', (string) $key), 422, 'Provider variable keys must be numbers from 1 to 99.');
-        }
 
         return DB::transaction(function () use ($r, $id, $d) {
             ShopLock::acquire();
@@ -97,7 +95,7 @@ class CommunicationController extends Controller
     public function consent(Request $r, int $customer)
     {
         Access::require('communications.manage');
-        $d = $r->validate(['channel' => 'required|in:sms,whatsapp,email', 'purpose' => 'required|in:service,marketing', 'granted' => 'required|boolean', 'evidence' => 'required|string|min:3|max:2000']);
+        $d = $r->validate(['channel' => 'required|in:email', 'purpose' => 'required|in:service,marketing', 'granted' => 'required|boolean', 'evidence' => 'required|string|min:3|max:2000']);
 
         return DB::transaction(function () use ($r, $customer, $d) {
             ShopLock::acquire();
@@ -117,7 +115,7 @@ class CommunicationController extends Controller
     public function index(Request $r)
     {
         Access::require('communications.read');
-        $d = $r->validate(['customer_id' => 'nullable|integer', 'channel' => 'nullable|in:sms,whatsapp,email', 'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1']);
+        $d = $r->validate(['customer_id' => 'nullable|integer', 'channel' => 'nullable|in:email', 'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1']);
 
         return CustomerMessage::with('customer:id,first_name,last_name')->when($d['customer_id'] ?? null, fn ($q, $v) => $q->where('customer_id', $v))->when($d['channel'] ?? null, fn ($q, $v) => $q->where('channel', $v))->when($d['status'] ?? null, fn ($q, $v) => $q->where('status', $v))->orderByDesc('id')->paginate(25);
     }
@@ -133,14 +131,15 @@ class CommunicationController extends Controller
     {
         Access::require('communications.send');
         Access::require('customers.read');
-        $d = $r->validate(['customer_id' => 'required|integer', 'template_id' => 'nullable|integer', 'reminder_id' => 'nullable|integer', 'channel' => 'required_without:template_id|nullable|in:email,sms,whatsapp', 'purpose' => 'required_without:template_id|nullable|in:service,marketing', 'subject' => 'nullable|string|max:200', 'body' => 'required_without:template_id|nullable|string|max:4000', 'scheduled_at' => 'nullable|date|after_or_equal:now', 'delay_minutes' => 'nullable|integer|min:0|max:525600', 'creation_key' => 'required|uuid']);
+        $d = $r->validate(['customer_id' => 'required|integer', 'template_id' => 'nullable|integer', 'reminder_id' => 'nullable|integer', 'channel' => 'required_without:template_id|nullable|in:email', 'purpose' => 'required_without:template_id|nullable|in:service,marketing', 'subject' => 'nullable|string|max:200', 'body' => 'required_without:template_id|nullable|string|max:4000', 'scheduled_at' => 'nullable|date|after_or_equal:now', 'delay_minutes' => 'nullable|integer|min:0|max:525600', 'creation_key' => 'required|uuid']);
         $reminder = empty($d['reminder_id']) ? null : Reminder::where('customer_id', $d['customer_id'])->findOrFail($d['reminder_id']);
         if ($reminder) {
             abort_unless(Access::canReadReminder($reminder), 403);
             abort_unless(app(ReminderPlanner::class)->valid($reminder), 409, 'This reminder is no longer open or eligible.');
         }
 
-        return response()->json(['data' => $messages->queue($d, $r->user()->id, $reminder)], 201);
+        $message = $messages->queue($d, $r->user()->id, $reminder);
+        return response()->json(['data' => $messages->deliverImmediately($message)], 201);
     }
 
     public function action(Request $r, Messages $messages, int $id, string $action)
@@ -148,7 +147,7 @@ class CommunicationController extends Controller
         Access::require('communications.send');
         $d = $r->validate(['version' => 'required|integer|min:1', 'reason' => 'required|string|min:3|max:2000']);
 
-        return DB::transaction(function () use ($r, $d, $id, $action, $messages) {
+        $message = DB::transaction(function () use ($r, $d, $id, $action, $messages) {
             ShopLock::acquire();
             $m = CustomerMessage::lockForUpdate()->findOrFail($id);
             abort_unless($m->version === $d['version'], 409, 'Message changed. Refresh before continuing.');
@@ -172,9 +171,16 @@ class CommunicationController extends Controller
             $m->save();
             $messages->event($m, $m->status, 'manual_'.$action, $d['reason'], $r->user()->id);
             Audit::record('message.'.$action, $m->shop_id, $r->user()->id, 'message', $id);
-            if ($action === 'retry') $messages->dispatchIfDue($m);
-
-            return ['data' => $m];
+            return $m->fresh();
         });
+
+        // The transaction must commit before the synchronous sender takes a
+        // lease. This makes a manual retry just as immediate as a new
+        // "Send now" request, without allowing duplicate submissions.
+        if ($action === 'retry') {
+            $message = $messages->deliverImmediately($message);
+        }
+
+        return ['data' => $message];
     }
 }

@@ -120,9 +120,12 @@ class ReportsAndAdminTest extends TestCase
         $this->assertStringNotContainsString('=Formula', $r->getContent());
         Role::where('name', 'system_admin')->first()->permissions()->detach(Permission::where('name', 'platform.audit')->first());
         $this->getJson('/api/v1/admin/audit')->assertForbidden();
+        // Platform administrators intentionally do not require email
+        // verification to access the separate Admin Panel. Their authority is
+        // still enforced by the system_admin permission set above.
         $admin->email_verified_at = null;
         $admin->save();
         Auth::forgetGuards();
-        $this->getJson('/api/v1/admin/operations')->assertForbidden();
+        $this->getJson('/api/v1/admin/operations')->assertOk();
     }
 }

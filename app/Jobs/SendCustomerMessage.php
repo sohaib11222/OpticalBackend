@@ -38,6 +38,12 @@ class SendCustomerMessage implements ShouldQueue
                     if (! in_array($m->status, Messages::PENDING) || $m->scheduled_at->isFuture() || $m->next_attempt_at?->isFuture()) {
                         return null;
                     }
+                    if ($m->channel !== 'email') {
+                        $m->forceFill(['status' => 'cancelled', 'error_code' => 'channel_retired', 'error_message' => 'SMS and automated WhatsApp delivery are no longer available.'])->save();
+                        $messages->event($m, 'cancelled', 'channel_retired');
+
+                        return null;
+                    }
                     if ($reason = $messages->eligible($m)) {
                         $m->forceFill(['status' => 'cancelled', 'error_code' => $reason, 'error_message' => 'Sending is no longer authorized. Review recipient opt-outs and source records.'])->save();
                         $messages->event($m, 'cancelled', $reason);
