@@ -4,12 +4,14 @@ namespace Tests\Feature;
 
 use App\Jobs\Middleware\WithTenant;
 use App\Models\PrivateFile;
+use App\Models\AccountPasswordChangeCode;
 use App\Models\Role;
 use App\Models\Shop;
 use App\Models\ShopMembership;
 use App\Models\User;
 use App\Notifications\ResetAccountPassword;
 use App\Notifications\VerifyAccount;
+use App\Notifications\VerifyPasswordChangeCode;
 use App\Services\Commerce\Notices;
 use App\Services\Sessions;
 use App\Tenancy\TenantContext;
@@ -259,30 +261,33 @@ class FoundationTest extends TestCase
         $this->postJson('/api/v1/auth/reset-password', $d)->assertUnprocessable();
     }
 
-    public function test_password_change_checks_current_password_and_revokes_session(): void
+    public function test_password_change_requires_a_current_email_code_and_revokes_sessions(): void
     {
         $u = $this->owner();
         $this->loginUser($u);
-        $d = ['current_password' => 'wrong', 'password' => 'NewPassword12345!', 'password_confirmation' => 'NewPassword12345!'];
-        $this->postJson('/api/v1/auth/password', $d)->assertUnprocessable()->assertJsonValidationErrors('current_password');
-        $d['current_password'] = self::PASS;
+        $d = ['password' => 'NewPassword12345!', 'password_confirmation' => 'NewPassword12345!'];
+        $this->postJson('/api/v1/auth/password', $d)->assertUnprocessable()->assertJsonValidationErrors('code');
+        $this->postJson('/api/v1/auth/password/change-code')->assertOk();
+        $notice = Notification::sent($u, VerifyPasswordChangeCode::class)->first();
+        $property = new \ReflectionProperty($notice, 'code');
+        $code = $property->getValue($notice);
+        $this->assertTrue(Hash::check($code, AccountPasswordChangeCode::where('user_id', $u->id)->value('code_hash')));
+        $this->postJson('/api/v1/auth/password/verify-code', ['code' => '00000000'])->assertUnprocessable()->assertJsonValidationErrors('code');
+        $this->assertNull(AccountPasswordChangeCode::where('user_id', $u->id)->value('used_at'));
+        $this->assertSame(1, AccountPasswordChangeCode::where('user_id', $u->id)->value('attempts'));
+        $this->postJson('/api/v1/auth/password/verify-code', ['code' => $code])->assertOk()->assertJsonPath('data.verified', true);
         $this->postJson('/api/v1/auth/password', $d)->assertNoContent();
         Auth::forgetGuards();
         $this->getJson('/api/v1/auth/me')->assertUnauthorized();
         $this->assertTrue(Hash::check($d['password'], $u->fresh()->password));
     }
 
-    public function test_email_change_requires_reverification_and_revokes_session(): void
+    public function test_email_change_endpoint_is_not_available(): void
     {
         $u = $this->owner();
         $this->loginUser($u);
-        $this->postJson('/api/v1/auth/email', ['email' => 'next@example.test', 'current_password' => 'wrong'])->assertUnprocessable();
-        $this->postJson('/api/v1/auth/email', ['email' => 'NEXT@example.test', 'current_password' => self::PASS])->assertNoContent();
-        Auth::forgetGuards();
-        $this->getJson('/api/v1/auth/me')->assertUnauthorized();
-        $this->assertSame('next@example.test', $u->fresh()->email);
-        $this->assertFalse($u->fresh()->hasVerifiedEmail());
-        Notification::assertSentTo($u, VerifyAccount::class);
+        $this->postJson('/api/v1/auth/email', ['email' => 'next@example.test'])->assertNotFound();
+        $this->assertSame($u->email, $u->fresh()->email);
     }
 
     public function test_foreign_ids_payload_headers_and_members_are_isolated(): void

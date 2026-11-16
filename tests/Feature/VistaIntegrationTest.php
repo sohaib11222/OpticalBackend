@@ -204,6 +204,36 @@ class VistaIntegrationTest extends TestCase
         $this->assertDatabaseCount('customers', 1);
     }
 
+    public function test_vista_customer_import_preflight_identifies_and_accepts_missing_name_corrections(): void
+    {
+        $this->login();
+        $this->context();
+        $connection = VistaConnection::firstOrFail();
+        $record = VistaRecord::create([
+            'vista_connection_id' => $connection->id,
+            'kind' => 'customers',
+            'remote_id' => 'name-fix-1',
+            'payload' => ['name' => 'Onlyname', 'email' => 'name-fix@example.test'],
+            'seen_run' => 'test-name-fix',
+            'observed_at' => now(),
+            'unavailable' => false,
+        ]);
+        app(TenantContext::class)->clear();
+
+        $this->postJson('/api/v1/integrations/vista/customer-imports/requirements', ['rows' => [['id' => $record->id]]])
+            ->assertOk()
+            ->assertJsonPath('data.needs_attention.0.id', $record->id)
+            ->assertJsonPath('data.needs_attention.0.missing_fields.0', 'last_name');
+        $this->postJson('/api/v1/integrations/vista/customer-imports', ['automatic' => true, 'rows' => [['id' => $record->id]]])
+            ->assertUnprocessable()
+            ->assertJsonPath('code', 'vista_customer_details_required');
+        $this->postJson('/api/v1/integrations/vista/customer-imports', [
+            'automatic' => true,
+            'rows' => [['id' => $record->id, 'first_name' => 'Onlyname', 'last_name' => 'Corrected']],
+        ])->assertCreated();
+        $this->assertDatabaseHas('customers', ['first_name' => 'Onlyname', 'last_name' => 'Corrected', 'source' => 'vista_express']);
+    }
+
     public function test_publication_reserves_stock_and_ambiguous_failure_retries_exactly_once(): void
     {
         $this->login();

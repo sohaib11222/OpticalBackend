@@ -30,8 +30,9 @@ Route::middleware('web')->prefix('v1')->group(function () {
                 Route::get('me', [AuthController::class, 'me']);
                 Route::post('logout', [AuthController::class, 'logout']);
                 Route::post('verification-notification', [AuthController::class, 'resend'])->middleware('throttle:verification');
+                Route::post('password/change-code', [AuthController::class, 'sendPasswordChangeCode'])->middleware('throttle:recovery');
+                Route::post('password/verify-code', [AuthController::class, 'verifyPasswordChangeCode'])->middleware('throttle:recovery');
                 Route::post('password', [AuthController::class, 'changePassword'])->middleware('throttle:recovery');
-                Route::post('email', [AuthController::class, 'changeEmail'])->middleware('throttle:recovery');
             });
         });
     }

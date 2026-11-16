@@ -37,24 +37,26 @@ class VistaController extends Controller
         foreach (['integrations.read', 'imports.write', 'customers.write'] as $p) {
             $this->permit($p);
         }
-        $d = $r->validate(['rows' => 'required|array|min:1|max:100', 'rows.*.id' => 'required|integer|min:1|distinct', 'rows.*.first_name' => 'nullable|string|max:100', 'rows.*.last_name' => 'nullable|string|max:100', 'automatic' => 'sometimes|boolean']);
+        $d = $this->customerImportInput($r, true);
         $automatic = (bool) ($d['automatic'] ?? false);
         $c = VistaConnection::firstOrFail();
         abort_if($c->status === 'disconnected', 409, 'Reconnect first.');
-        $b = DB::transaction(function () use ($d, $c, $r, $automatic) {
+        [$selectedRows, $needsAttention] = $this->customerImportRows($d['rows'], $c);
+        if ($needsAttention) {
+            return response()->json([
+                'message' => 'Some selected Vista customers need a first and last name before import.',
+                'code' => 'vista_customer_details_required',
+                'data' => ['needs_attention' => $needsAttention],
+            ], 422);
+        }
+        $b = DB::transaction(function () use ($selectedRows, $c, $r, $automatic) {
             ShopLock::acquire();
-            $rows = [];
-            foreach ($d['rows'] as $choice) {
-                $record = VistaRecord::where('vista_connection_id', $c->id)->where('kind', 'customers')->where('unavailable', false)->findOrFail($choice['id']);
-                [$first, $last] = $this->customerNames($choice, $record);
-                $rows[] = ['remote_id' => $record->remote_id, 'values' => [$first, $last, $record->payload['email'] ?? '', $record->payload['phone'] ?? '']];
-            }
-            $hash = hash('sha256', 'vista:'.$c->id.':'.($automatic ? 'automatic' : 'review').':'.json_encode($rows, JSON_THROW_ON_ERROR));
+            $hash = hash('sha256', 'vista:'.$c->id.':'.($automatic ? 'automatic' : 'review').':'.json_encode($selectedRows, JSON_THROW_ON_ERROR));
             if ($old = CustomerImport::where('source_hash', $hash)->first()) {
                 return $old;
             }
-            $b = CustomerImport::create(['file_id' => null, 'source_kind' => 'vista_express', 'vista_connection_id' => $c->id, 'source_hash' => $hash, 'headers' => ['First name', 'Last name', 'Email', 'Phone'], 'mapping' => ['first_name' => 0, 'last_name' => 1, 'email' => 2, 'phone' => 3], 'date_format' => 'Y-m-d', 'delimiter' => ',', 'automatic' => $automatic, 'total_rows' => count($rows), 'created_by' => $r->user()->id, 'status' => 'previewing', 'stage' => 'preview']);
-            foreach ($rows as $i => $row) {
+            $b = CustomerImport::create(['file_id' => null, 'source_kind' => 'vista_express', 'vista_connection_id' => $c->id, 'source_hash' => $hash, 'headers' => ['First name', 'Last name', 'Email', 'Phone'], 'mapping' => ['first_name' => 0, 'last_name' => 1, 'email' => 2, 'phone' => 3], 'date_format' => 'Y-m-d', 'delimiter' => ',', 'automatic' => $automatic, 'total_rows' => count($selectedRows), 'created_by' => $r->user()->id, 'status' => 'previewing', 'stage' => 'preview']);
+            foreach ($selectedRows as $i => $row) {
                 $b->rows()->create(['row_number' => $i + 1, 'creation_key' => Str::uuid()->toString(), 'raw_values' => $row['values'], 'parse_errors' => []]);
             }
             app(CustomerImports::class)->preview($b);
@@ -95,18 +97,91 @@ class VistaController extends Controller
         return response()->json(['data' => $b->fresh()], config('documents.customer_imports_sync') ? 201 : 202);
     }
 
-    /** Derive a safe display name from Vista's currently public customer snapshot. */
+    /** Reports any missing identity parts before the user starts an import. */
+    public function customerImportRequirements(Request $r)
+    {
+        foreach (['integrations.read', 'imports.write', 'customers.write'] as $p) {
+            $this->permit($p);
+        }
+        $d = $this->customerImportInput($r);
+        $c = VistaConnection::firstOrFail();
+        abort_if($c->status === 'disconnected', 409, 'Reconnect first.');
+        [, $needsAttention] = $this->customerImportRows($d['rows'], $c);
+
+        return ['data' => ['needs_attention' => $needsAttention]];
+    }
+
+    private function customerImportInput(Request $r, bool $withAutomatic = false): array
+    {
+        $rules = [
+            'rows' => 'required|array|min:1|max:100',
+            'rows.*.id' => 'required|integer|min:1|distinct',
+            'rows.*.first_name' => 'nullable|string|max:100',
+            'rows.*.last_name' => 'nullable|string|max:100',
+        ];
+        if ($withAutomatic) {
+            $rules['automatic'] = 'sometimes|boolean';
+        }
+
+        return $r->validate($rules);
+    }
+
+    /**
+     * Vista snapshots are external source data. Corrections are kept in the
+     * import payload rather than modifying the seller's remote customer.
+     */
+    private function customerImportRows(array $choices, VistaConnection $connection): array
+    {
+        $rows = [];
+        $needsAttention = [];
+        foreach ($choices as $choice) {
+            $record = VistaRecord::where('vista_connection_id', $connection->id)
+                ->where('kind', 'customers')
+                ->where('unavailable', false)
+                ->findOrFail($choice['id']);
+            [$first, $last, $missing] = $this->customerNames($choice, $record);
+            if ($missing) {
+                $needsAttention[] = [
+                    'id' => $record->id,
+                    'name' => trim((string) ($record->payload['name'] ?? '')) ?: 'Vista customer #'.$record->remote_id,
+                    'email' => $record->payload['email'] ?? null,
+                    'first_name' => $first,
+                    'last_name' => $last,
+                    'missing_fields' => $missing,
+                ];
+                continue;
+            }
+            $rows[] = [
+                'remote_id' => $record->remote_id,
+                'values' => [$first, $last, $record->payload['email'] ?? '', $record->payload['phone'] ?? ''],
+            ];
+        }
+
+        return [$rows, $needsAttention];
+    }
+
+    /** Derive only trustworthy name parts from Vista's public snapshot. */
     private function customerNames(array $choice, VistaRecord $record): array
     {
-        $first = trim((string) ($choice['first_name'] ?? ''));
-        $last = trim((string) ($choice['last_name'] ?? ''));
-        if ($first !== '' && $last !== '') {
-            return [$first, $last];
+        $payload = $record->payload ?? [];
+        $first = trim((string) ($choice['first_name'] ?? $payload['first_name'] ?? $payload['firstName'] ?? ''));
+        $last = trim((string) ($choice['last_name'] ?? $payload['last_name'] ?? $payload['lastName'] ?? ''));
+        $parts = preg_split('/\s+/', trim((string) ($payload['name'] ?? '')), 2, PREG_SPLIT_NO_EMPTY) ?: [];
+        if ($first === '' && $parts) {
+            $first = $parts[0];
         }
-        $parts = preg_split('/\s+/', trim((string) ($record->payload['name'] ?? '')), 2, PREG_SPLIT_NO_EMPTY) ?: [];
-        abort_unless(count($parts) >= 2, 422, 'A selected Vista customer needs a first and last name before import.');
+        if ($last === '' && count($parts) >= 2) {
+            $last = $parts[1];
+        }
+        $missing = [];
+        if ($first === '') {
+            $missing[] = 'first_name';
+        }
+        if ($last === '') {
+            $missing[] = 'last_name';
+        }
 
-        return [$first !== '' ? $first : $parts[0], $last !== '' ? $last : $parts[1]];
+        return [$first, $last, $missing];
     }
 
     public function show()

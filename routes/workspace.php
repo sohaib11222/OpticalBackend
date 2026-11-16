@@ -105,6 +105,7 @@ Route::post('integrations/vista/operations/{operation}/retry', [VistaController:
 Route::post('integrations/vista/operations/{operation}/cancel', [VistaController::class, 'cancel'])->whereNumber('operation');
 
 Route::post('integrations/vista/customer-imports', [VistaController::class, 'importCustomers']);
+Route::post('integrations/vista/customer-imports/requirements', [VistaController::class, 'customerImportRequirements']);
 Route::get('employees', [\App\Http\Controllers\Api\V1\EmployeeController::class, 'index']);
 Route::get('employees/catalog', [\App\Http\Controllers\Api\V1\EmployeeController::class, 'catalog']);
 Route::post('employees', [\App\Http\Controllers\Api\V1\EmployeeController::class, 'save']);

@@ -4,13 +4,16 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\PasswordChangeWithCodeRequest;
 use App\Http\Requests\Auth\PasswordRequest;
 use App\Http\Requests\Auth\RegisterRequest;
 use App\Http\Resources\SessionResource;
+use App\Models\AccountPasswordChangeCode;
 use App\Models\Role;
 use App\Models\Shop;
 use App\Models\ShopMembership;
 use App\Models\User;
+use App\Notifications\VerifyPasswordChangeCode;
 use App\Services\Audit;
 use App\Services\EmailVerification;
 use App\Services\Sessions;
@@ -121,29 +124,110 @@ class AuthController extends Controller
         return response()->json(['message' => 'Password reset. Sign in with your new password.']);
     }
 
-    public function changePassword(PasswordRequest $r)
+    public function sendPasswordChangeCode(Request $r)
+    {
+        $u = $r->user();
+        $sessionHash = hash('sha256', $r->session()->getId());
+        $resendSeconds = max(30, (int) config('optical.password_change_code_resend_seconds', 60));
+        $minutes = max(5, (int) config('optical.password_change_code_minutes', 15));
+        $code = (string) random_int(10_000_000, 99_999_999);
+        $record = DB::transaction(function () use ($u, $sessionHash, $resendSeconds, $minutes, $code) {
+            // Lock the account so two browser requests cannot issue two valid
+            // codes within the same resend window.
+            User::whereKey($u->id)->lockForUpdate()->firstOrFail();
+            $recent = AccountPasswordChangeCode::where('user_id', $u->id)
+                ->latest('id')
+                ->first();
+            if ($recent && $recent->created_at->greaterThan(now()->subSeconds($resendSeconds))) {
+                abort(429, 'Please wait before requesting another verification code.');
+            }
+            AccountPasswordChangeCode::where('user_id', $u->id)
+                ->whereNull('used_at')
+                ->update(['used_at' => now()]);
+
+            return AccountPasswordChangeCode::create([
+                'user_id' => $u->id,
+                'session_hash' => $sessionHash,
+                'code_hash' => Hash::make($code),
+                'expires_at' => now()->addMinutes($minutes),
+            ]);
+        });
+
+        try {
+            // Do not queue this notification: the endpoint must not tell a
+            // user that a code was sent if SMTP rejected it.
+            $u->notify(new VerifyPasswordChangeCode($code, $minutes));
+        } catch (\Throwable $exception) {
+            $record->forceFill(['used_at' => now()])->save();
+            report($exception);
+
+            throw ValidationException::withMessages(['email' => ['The verification code could not be sent. Check the email service configuration and try again.']]);
+        }
+        Audit::record('account.password_change_code_sent', null, $u->id);
+
+        return response()->json(['data' => [
+            'email' => $u->email,
+            'expires_at' => $record->expires_at->toIso8601String(),
+            'resend_after_seconds' => $resendSeconds,
+        ]]);
+    }
+
+    public function verifyPasswordChangeCode(Request $r)
+    {
+        $data = $r->validate(['code' => ['required', 'string', 'regex:/^\\d{8}$/']]);
+        $u = $r->user();
+        $maxAttempts = max(1, (int) config('optical.password_change_code_attempts', 5));
+        $result = DB::transaction(function () use ($u, $data, $maxAttempts) {
+            $record = AccountPasswordChangeCode::where('user_id', $u->id)
+                ->whereNull('used_at')
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
+            if (! $record || $record->expires_at->isPast()) {
+                if ($record) {
+                    $record->forceFill(['used_at' => now()])->save();
+                }
+                return null;
+            }
+            if (! Hash::check($data['code'], $record->code_hash)) {
+                $record->increment('attempts');
+                if ($record->fresh()->attempts >= $maxAttempts) {
+                    $record->forceFill(['used_at' => now()])->save();
+                }
+                return null;
+            }
+            $record->forceFill(['verified_at' => now()])->save();
+
+            return $record;
+        });
+        if (! $result) {
+            throw ValidationException::withMessages(['code' => ['This verification code is invalid or expired. Request a new code.']]);
+        }
+        $record = $result;
+        Audit::record('account.password_change_code_verified', null, $u->id);
+
+        return response()->json(['data' => ['verified' => true, 'expires_at' => $record->expires_at->toIso8601String()]]);
+    }
+
+    public function changePassword(PasswordChangeWithCodeRequest $r)
     {
         $u = $r->user();
         DB::transaction(function () use ($r, $u) {
+            $code = AccountPasswordChangeCode::where('user_id', $u->id)
+                ->whereNotNull('verified_at')
+                ->whereNull('used_at')
+                ->where('expires_at', '>', now())
+                ->latest('verified_at')
+                ->lockForUpdate()
+                ->first();
+            if (! $code) {
+                throw ValidationException::withMessages(['code' => ['Verify the code sent to your registered email before changing the password.']]);
+            }
             $u->password = $r->validated('password');
             $u->save();
+            $code->forceFill(['used_at' => now()])->save();
             Sessions::revoke($u);
             Audit::record('account.password_changed', null, $u->id);
-        });
-
-        return $this->logout($r);
-    }
-
-    public function changeEmail(Request $r)
-    {
-        $r->merge(['email' => strtolower(trim((string) $r->input('email')))]);
-        $d = $r->validate(['email' => 'required|email:rfc|max:254|unique:users,email', 'current_password' => 'required|current_password:web']);
-        $u = $r->user();
-        DB::transaction(function () use ($u, $d) {
-            $u->forceFill(['email' => $d['email'], 'email_verified_at' => null])->save();
-            Sessions::revoke($u);
-            $u->sendEmailVerificationNotification();
-            Audit::record('account.email_changed', null, $u->id);
         });
 
         return $this->logout($r);
