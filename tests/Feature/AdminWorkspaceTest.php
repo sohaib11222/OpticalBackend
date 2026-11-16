@@ -14,6 +14,7 @@ use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
@@ -98,5 +99,45 @@ class AdminWorkspaceTest extends TestCase
         // 360-second window to avoid a false "worker stopped" warning.
         Cache::put('optical:worker-heartbeat:database:uploads', time() - 400, 420);
         $this->getJson('/api/v1/uploads/processing')->assertOk()->assertJsonPath('data.worker_active', false);
+    }
+
+    public function test_platform_admin_uses_a_signed_marketplace_bridge_without_leaving_the_admin_spa(): void
+    {
+        config([
+            'vista.admin_bridge_enabled' => true,
+            'vista.admin_bridge_url' => 'http://127.0.0.1:8200/api/optical/admin/vista360',
+            'vista.admin_bridge_secret' => str_repeat('b', 48),
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'http://127.0.0.1:8200/api/optical/admin/vista360/plans' => Http::response(['data' => [[
+                'id' => 7,
+                'name' => 'Pro',
+                'slug' => 'pro',
+                'is_active' => true,
+                'prices' => [],
+                'features' => [],
+            ]]]),
+        ]);
+        $admin = User::factory()->create(['account_type' => 'admin', 'password' => 'TestingPassword123!']);
+        $this->login($admin);
+
+        $this->getJson('/api/v1/admin/vista360/plans')
+            ->assertOk()
+            ->assertJsonPath('data.0.slug', 'pro');
+        Http::assertSent(function ($request) {
+            return $request->method() === 'GET'
+                && $request->url() === 'http://127.0.0.1:8200/api/optical/admin/vista360/plans'
+                && $request->hasHeader('X-Vista360-Bridge-Timestamp')
+                && $request->hasHeader('X-Vista360-Bridge-Nonce')
+                && $request->hasHeader('X-Vista360-Bridge-Signature');
+        });
+
+        Auth::forgetGuards();
+        $owner = User::factory()->create(['password' => 'TestingPassword123!']);
+        $shop = $this->shop('Not platform');
+        ShopMembership::create(['shop_id' => $shop->id, 'user_id' => $owner->id, 'role_id' => Role::where('name', 'owner')->value('id')]);
+        $this->login($owner);
+        $this->getJson('/api/v1/admin/vista360/plans')->assertForbidden();
     }
 }

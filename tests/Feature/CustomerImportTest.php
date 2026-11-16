@@ -245,4 +245,46 @@ class CustomerImportTest extends TestCase
         }
         $this->assertDatabaseCount('customers', 0);
     }
+
+    public function test_automatic_import_maps_italian_headers_preserves_additional_columns_and_only_holds_problem_rows(): void
+    {
+        $file = $this->upload(
+            "Nome;Cognome;Data di nascita;Telefono;Email;Indirizzo;Città;CAP;Sesso;Telefono secondario;Azienda\n".
+            "Ada;Rossi;04/03/1990;+39 0612345678;ada.rossi@example.test;Via Roma 1;Roma;00100;female;+39 0699999999;Vista Ottica\n".
+            ";Broken;31/02/1990;bad;not-an-email;Via Due;Roma;00101;other;;\n",
+        );
+
+        $queued = $this->postJson('/api/v1/customer-imports', [
+            'file_id' => $file,
+            'automatic' => true,
+        ])->assertStatus(202)->json('data');
+        $this->job($queued);
+
+        $view = $this->getJson('/api/v1/customer-imports/'.$queued['id'])->assertOk()->json();
+        $batch = $view['data'];
+        $this->assertSame('ready', $batch['status']);
+        $this->assertTrue($batch['automatic']);
+        $this->assertSame(0, $batch['mapping']['first_name']);
+        $this->assertSame(1, $batch['mapping']['last_name']);
+        $this->assertSame('d/m/Y', $batch['date_format']);
+        $this->assertSame(1, $view['summary']['valid']);
+        $this->assertSame(1, $view['summary']['requires_attention']);
+
+        $commit = $this->postJson('/api/v1/customer-imports/'.$batch['id'].'/commit', ['version' => $batch['version']])
+            ->assertStatus(202)->json('data');
+        $this->job($commit);
+        $view = $this->getJson('/api/v1/customer-imports/'.$batch['id'])->assertOk()->json();
+        $this->assertSame('completed_with_attention', $view['data']['status']);
+        $this->getJson('/api/v1/customer-imports/'.$batch['id'].'/rows?attention=true')
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+        $this->assertDatabaseHas('customers', [
+            'first_name' => 'Ada',
+            'last_name' => 'Rossi',
+            'postal_code' => '00100',
+        ]);
+        $customer = \App\Models\Customer::withoutGlobalScopes()->where('email', 'ada.rossi@example.test')->firstOrFail();
+        $this->assertSame('+39 0699999999', $customer->custom_fields['Telefono secondario']);
+        $this->assertSame('Vista Ottica', $customer->custom_fields['Azienda']);
+    }
 }

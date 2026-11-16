@@ -15,7 +15,7 @@ class CustomerImport extends Model
 
     protected function casts(): array
     {
-        return ['headers' => 'array', 'sheets' => 'array', 'mapping' => 'array', 'version' => 'integer', 'processed_rows' => 'integer', 'total_rows' => 'integer', 'date_system' => 'integer'];
+        return ['headers' => 'array', 'sheets' => 'array', 'mapping' => 'array', 'additional_mapping' => 'array', 'mapping_diagnostics' => 'array', 'automatic' => 'boolean', 'version' => 'integer', 'processed_rows' => 'integer', 'total_rows' => 'integer', 'date_system' => 'integer'];
     }
 
     public function rows()

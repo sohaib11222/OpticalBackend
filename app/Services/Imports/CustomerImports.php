@@ -39,9 +39,19 @@ class CustomerImports
         return DB::transaction(function () use ($d, $actor) {
             Shop::whereKey(app(TenantContext::class)->id())->lockForUpdate()->firstOrFail();
             $file = $this->file($d['file_id']);
-            $hash = hash('sha256', $file->sha256.'|'.($d['sheet_name'] ?? '').'|'.$d['delimiter']);
+            $automatic = (bool) ($d['automatic'] ?? false);
+            // Keep legacy, explicitly-mapped imports reproducible. Automatic
+            // imports get their own hash so a user can safely re-run an old
+            // manual batch using the new guided flow.
+            $hash = hash('sha256', $file->sha256.'|'.($d['sheet_name'] ?? '').'|'.($automatic ? 'automatic-v2' : $d['delimiter']));
 
-            return CustomerImport::firstOrCreate(['source_hash' => $hash], ['file_id' => $file->id, 'sheet_name' => $d['sheet_name'] ?? null, 'delimiter' => $d['delimiter'], 'created_by' => $actor])->refresh();
+            return CustomerImport::firstOrCreate(['source_hash' => $hash], [
+                'file_id' => $file->id,
+                'sheet_name' => $d['sheet_name'] ?? null,
+                'delimiter' => $d['delimiter'] ?? ',',
+                'automatic' => $automatic,
+                'created_by' => $actor,
+            ])->refresh();
         });
     }
 
@@ -60,20 +70,52 @@ class CustomerImports
         $file = $this->file($batch->file_id);
         $path = Storage::disk('private')->path($file->storage_key);
         abort_unless(hash_equals($file->sha256, hash_file('sha256', $path)), 409, 'Source file integrity check failed.');
-        $parsed = app(CustomerFileReader::class)->read($path, strtolower(pathinfo($file->filename, PATHINFO_EXTENSION)), $batch->sheet_name, $batch->delimiter);
+        $parsed = app(CustomerFileReader::class)->read($path, strtolower(pathinfo($file->filename, PATHINFO_EXTENSION)), $batch->sheet_name, $batch->delimiter, (bool) $batch->automatic);
         DB::transaction(function () use ($batch, $parsed) {
             $batch->rows()->delete();
             foreach (array_chunk($parsed['rows'], 200) as $chunk) {
                 $records = array_map(fn ($r) => ['shop_id' => $batch->shop_id, 'customer_import_id' => $batch->id, 'row_number' => $r['row_number'], 'creation_key' => (string) Str::uuid(), 'raw_values' => json_encode($r['values'], JSON_THROW_ON_ERROR), 'parse_errors' => json_encode($r['errors'], JSON_THROW_ON_ERROR), 'created_at' => now(), 'updated_at' => now()], $chunk);
                 CustomerImportRow::insert($records);
             }
-            $batch->fill(array_intersect_key($parsed, array_flip(['headers', 'sheets', 'sheet_name', 'date_system'])));
+            $batch->fill(array_intersect_key($parsed, array_flip(['headers', 'sheets', 'sheet_name', 'date_system', 'delimiter'])));
             $batch->total_rows = count($parsed['rows']);
             $batch->status = 'mapping';
             $batch->last_error = null;
             $batch->version++;
             $batch->save();
         });
+
+        if ($batch->fresh()->automatic) {
+            $this->autoConfigureAndPreview($batch->fresh());
+        }
+    }
+
+    /**
+     * Use headers and a small sample to create a transparent automatic plan.
+     * Identity fields are never guessed: if first/last name are unclear, the
+     * batch stays in mapping and the guided UI asks only for those fields.
+     */
+    private function autoConfigureAndPreview(CustomerImport $batch): void
+    {
+        $ready = DB::transaction(function () use ($batch) {
+            $b = CustomerImport::lockForUpdate()->findOrFail($batch->id);
+            abort_unless($b->status === 'mapping' && $b->processed_rows === 0, 409, 'Import changed while columns were being detected.');
+            $samples = $b->rows()->orderBy('row_number')->limit(25)->get()->map(fn ($row) => $row->raw_values ?? [])->all();
+            $detected = app(CustomerColumnMapper::class)->detect($b->headers ?? [], $samples);
+            $b->mapping = $detected['mapping'];
+            $b->additional_mapping = $detected['additional_mapping'];
+            $b->mapping_diagnostics = $detected['mapping_diagnostics'];
+            $b->date_format = $detected['date_format'];
+            $b->stage = 'preview';
+            $b->status = empty($detected['mapping_diagnostics']['needs_mapping']) ? 'previewing' : 'mapping';
+            $b->version++;
+            $b->save();
+
+            return $b->fresh();
+        });
+        if ($ready->status === 'previewing') {
+            $this->preview($ready);
+        }
     }
 
     public function configure(int $id, array $d, string $stage): CustomerImport
@@ -94,6 +136,14 @@ class CustomerImports
                 }
                 $b->mapping = $d['mapping'];
                 $b->date_format = $d['date_format'];
+                if (array_key_exists('additional_mapping', $d)) {
+                    $b->additional_mapping = $d['additional_mapping'];
+                }
+                if ($b->automatic) {
+                    $diagnostics = $b->mapping_diagnostics ?? [];
+                    $diagnostics['needs_mapping'] = array_values(array_diff(['first_name', 'last_name'], array_keys($b->mapping ?? [])));
+                    $b->mapping_diagnostics = $diagnostics;
+                }
             }
             $b->stage = $stage;
             $b->status = $stage === 'parse' ? 'parsing' : 'previewing';
@@ -112,6 +162,17 @@ class CustomerImports
         foreach ($b->mapping as $field => $index) {
             $value = trim($r->raw_values[$index] ?? '');
             $data[$field] = $value === '' ? null : $value;
+        }
+        $custom = [];
+        foreach ($b->additional_mapping ?? [] as $index => $definition) {
+            if (($definition['action'] ?? 'custom') !== 'custom') {
+                continue;
+            }
+            $key = trim((string) ($definition['key'] ?? ($b->headers[(int) $index] ?? '')));
+            $value = trim((string) ($r->raw_values[(int) $index] ?? ''));
+            if ($key !== '' && $value !== '') {
+                $custom[mb_substr($key, 0, 100)] = mb_substr($value, 0, 4096);
+            }
         }
         if ($data['email']) {
             $data['email'] = strtolower($data['email']);
@@ -144,7 +205,7 @@ class CustomerImports
         $v = Validator::make($data, CustomerRequest::fieldRules());
         $errors = array_merge($errors, $v->errors()->all());
 
-        return [$data, array_values(array_unique($errors))];
+        return [$data, $custom, array_values(array_unique($errors))];
     }
 
     private function keys(array $d): array
@@ -168,11 +229,12 @@ class CustomerImports
         $counts = [];
         $registry = app(CustomerRegistry::class);
         foreach ($b->rows()->orderBy('id')->cursor() as $r) {
-            [$data,$errors] = $this->payload($b, $r);
+            [$data, $custom, $errors] = $this->payload($b, $r);
             $r->payload = $data;
+            $r->custom_fields = $custom;
             $r->errors = $errors;
             $r->matches = $errors ? [] : $registry->duplicates($data)->map->only(['id', 'first_name', 'last_name', 'email', 'phone', 'status', 'version'])->all();
-            $r->decision = 'pending';
+            $r->decision = $b->automatic && ! $errors && empty($r->matches) ? 'create' : 'pending';
             $r->status = 'pending';
             $r->result_error = null;
             $r->save();
@@ -182,6 +244,9 @@ class CustomerImports
         }
         foreach ($b->rows()->cursor() as $r) {
             $r->file_duplicate = count(array_filter($this->keys($r->payload), fn ($k) => $counts[$k] > 1)) > 0;
+            if ($b->automatic && $r->file_duplicate) {
+                $r->decision = 'pending';
+            }
             $r->save();
         }
         $b->status = 'ready';
@@ -195,7 +260,7 @@ class CustomerImports
         return DB::transaction(function () use ($id, $d) {
             $b = CustomerImport::lockForUpdate()->findOrFail($id);
             abort_unless($b->version === $d['version'], 409, 'Import changed. Refresh and review again.');
-            abort_unless(in_array($b->status, ['ready', 'completed_with_errors']), 409, 'Wait until preview is ready.');
+            abort_unless(in_array($b->status, ['ready', 'completed_with_errors', 'completed_with_attention']), 409, 'Wait until preview is ready.');
             foreach ($d['rows'] as $choice) {
                 $r = $b->rows()->lockForUpdate()->findOrFail($choice['id']);
                 abort_if(in_array($r->status, ['created', 'updated', 'skipped']), 409, 'Processed rows cannot be changed.');
@@ -222,13 +287,66 @@ class CustomerImports
         });
     }
 
+    /**
+     * Lets the guided import correct a problematic source row without asking
+     * the user to edit a spreadsheet and start the entire import again.
+     */
+    public function correct(int $id, int $rowId, array $d): CustomerImport
+    {
+        return DB::transaction(function () use ($id, $rowId, $d) {
+            $b = CustomerImport::lockForUpdate()->findOrFail($id);
+            abort_unless($b->version === $d['version'], 409, 'Import changed. Refresh and review again.');
+            abort_unless($b->automatic && in_array($b->status, ['ready', 'completed_with_errors', 'completed_with_attention']), 409, 'This row cannot be corrected in the current import state.');
+            $r = $b->rows()->lockForUpdate()->findOrFail($rowId);
+            abort_if(in_array($r->status, ['created', 'updated', 'skipped']), 409, 'Processed rows cannot be changed.');
+            $payload = array_fill_keys(Customer::FIELDS, null);
+            foreach (Customer::FIELDS as $field) {
+                $payload[$field] = $d['payload'][$field] ?? null;
+            }
+            if ($payload['email']) {
+                $payload['email'] = strtolower(trim($payload['email']));
+            }
+            Validator::make($payload, CustomerRequest::fieldRules())->validate();
+            $custom = [];
+            foreach ($d['custom_fields'] ?? [] as $key => $value) {
+                $key = trim((string) $key);
+                $value = trim((string) $value);
+                if ($key !== '' && $value !== '') {
+                    $custom[mb_substr($key, 0, 100)] = mb_substr($value, 0, 4096);
+                }
+            }
+            $registry = app(CustomerRegistry::class);
+            $matches = $registry->duplicates($payload)->map->only(['id', 'first_name', 'last_name', 'email', 'phone', 'status', 'version'])->all();
+            $keys = $this->keys($payload);
+            $fileDuplicate = $b->rows()->where('id', '!=', $r->id)->get(['payload'])->contains(function ($other) use ($keys) {
+                return count(array_intersect($keys, $this->keys($other->payload ?? []))) > 0;
+            });
+            $r->fill([
+                'payload' => $payload,
+                'custom_fields' => $custom,
+                'errors' => [],
+                'matches' => $matches,
+                'file_duplicate' => $fileDuplicate,
+                'decision' => ! $matches && ! $fileDuplicate ? 'create' : 'pending',
+                'status' => 'pending',
+                'result_error' => null,
+            ])->save();
+            $b->status = 'ready';
+            $b->version++;
+            $b->save();
+
+            return $b;
+        });
+    }
+
     public function commit(int $id, array $d): CustomerImport
     {
         return DB::transaction(function () use ($id, $d) {
             $b = CustomerImport::lockForUpdate()->findOrFail($id);
             abort_unless($b->version === $d['version'], 409, 'Import changed. Refresh before importing.');
-            abort_unless($b->status === 'ready', 409, 'Complete preview and decisions first.');
-            abort_if($b->rows()->where('decision', 'pending')->exists(), 422, 'Make a decision for every row before importing.');
+            abort_unless(in_array($b->status, ['ready', 'completed_with_errors', 'completed_with_attention']), 409, 'Complete preview and decisions first.');
+            abort_if(! $b->automatic && $b->rows()->where('decision', 'pending')->exists(), 422, 'Make a decision for every row before importing.');
+            abort_if($b->rows()->whereIn('decision', ['create', 'create_distinct', 'update', 'skip'])->whereIn('status', ['pending', 'error'])->doesntExist(), 422, 'There are no reviewed customer records to import.');
             $this->sourceAvailable($b);
             $b->stage = 'commit';
             $b->status = 'committing';
@@ -243,7 +361,7 @@ class CustomerImports
     public function process(CustomerImport $b, int $actor): void
     {
         $registry = app(CustomerRegistry::class);
-        foreach ($b->rows()->whereIn('status', ['pending', 'error'])->orderBy('id')->pluck('id') as $rowId) {
+        foreach ($b->rows()->whereIn('status', ['pending', 'error'])->where('decision', '!=', 'pending')->orderBy('id')->pluck('id') as $rowId) {
             // A long-running batch must stop if the actor or shop loses access.
             $membership = app(TenantContext::class)->membership()->fresh(['shop', 'user', 'role.permissions']);
             abort_unless($membership && $membership->status === 'active' && $membership->shop->status === 'active' && $membership->user->status === 'active' && $membership->user->canUseVerifiedFeatures() && $membership->can('imports.write') && $membership->can('customers.write'), 403);
@@ -263,6 +381,7 @@ class CustomerImports
                     }
                     abort_unless($membership->can($r->decision === 'update' ? 'customers.edit' : 'customers.create'), 403, 'This customer operation is not included in your permissions.');
                     $data = $r->payload;
+                    $custom = $r->custom_fields ?? [];
                     $target = $r->decision === 'update' ? Customer::findOrFail($r->target_customer_id) : null;
                     if ($target) {
                         $data = $target->only(Customer::FIELDS);
@@ -271,14 +390,15 @@ class CustomerImports
                                 $data[$field] = $r->payload[$field];
                             }
                         }
+                        $custom = array_replace($target->custom_fields ?? [], $custom);
                     }
                     Validator::make($data, CustomerRequest::fieldRules())->validate();
-                    [$customer] = $registry->save($data + ['creation_key' => $r->creation_key, 'version' => $r->target_version, 'confirm_distinct' => $r->decision === 'create_distinct' || $r->decision === 'update'], $actor, $target?->id);
+                    [$customer] = $registry->save($data + ['custom_fields' => $custom, 'creation_key' => $r->creation_key, 'version' => $r->target_version, 'confirm_distinct' => $r->decision === 'create_distinct' || $r->decision === 'update'], $actor, $target?->id);
                     if (! $target) {
                         $customer->source = $b->source_kind === 'vista_express' ? 'vista_express' : 'file_import';
                         $customer->save();
                     }
-                    $registry->event($customer, $target ? 'customer.import_updated' : 'customer.imported', $actor, array_keys($b->mapping), $r->reason, 'customer_import', $b->id);
+                    $registry->event($customer, $target ? 'customer.import_updated' : 'customer.imported', $actor, array_merge(array_keys($b->mapping ?? []), array_keys($custom)), $r->reason, 'customer_import', $b->id);
                     $r->result_customer_id = $customer->id;
                     $r->status = $target ? 'updated' : 'created';
                     $r->result_error = null;
@@ -293,7 +413,8 @@ class CustomerImports
             $b->processed_rows = $b->rows()->whereIn('status', ['created', 'updated', 'skipped'])->count();
             $b->save();
         }
-        $b->status = $b->rows()->where('status', 'error')->exists() ? 'completed_with_errors' : 'completed';
+        $attention = $b->rows()->where('decision', 'pending')->whereIn('status', ['pending', 'error'])->exists();
+        $b->status = $b->rows()->where('status', 'error')->exists() ? 'completed_with_errors' : ($attention ? 'completed_with_attention' : 'completed');
         $b->version++;
         $b->save();
         app(Notices::class)->emit('imports', 'imports.read', 'import:'.$b->id.':'.$b->version, 'import.'.$b->status, 'Customer import #'.$b->id.' '.str_replace('_', ' ', $b->status), '/customer-imports/'.$b->id);

@@ -250,6 +250,104 @@ class VistaIntegrationTest extends TestCase
 
     }
 
+    public function test_small_publication_returns_a_confirmed_result_without_waiting_for_a_worker(): void
+    {
+        $this->login();
+        Storage::fake('private');
+        $this->context();
+        $actor = User::firstOrFail()->id;
+        $category = ProductCategory::create(['name' => 'Frames', 'name_key' => 'frames', 'status' => 'active']);
+        [$product] = app(Catalog::class)->save([
+            'name' => 'Immediate Frame',
+            'sku' => 'IMMEDIATE-FRAME',
+            'brand' => 'Vista',
+            'model' => 'Immediate',
+            'color' => 'Black',
+            'description' => 'A valid frame for immediate Vista publishing.',
+            'category_id' => $category->id,
+            'price' => '100.00',
+            'low_stock_threshold' => 0,
+            'initial_quantity' => 3,
+            'creation_key' => Str::uuid()->toString(),
+        ], $actor);
+        $image = ProductImage::create([
+            'product_id' => $product->id,
+            'uploaded_by' => $actor,
+            'filename' => 'immediate.png',
+            'mime' => 'image/png',
+            'size' => 10,
+            'sha256' => str_repeat('c', 64),
+            'upload_key' => Str::uuid()->toString(),
+            'storage_key' => 'shops/'.$product->shop_id.'/catalog/source/immediate.png',
+            'display_key' => 'shops/'.$product->shop_id.'/catalog/display/immediate.png',
+            'scan_status' => 'clean',
+        ]);
+        Storage::disk('private')->put($image->display_key, 'synthetic processed image');
+        $product->forceFill(['status' => 'active', 'primary_image_id' => $image->id])->save();
+
+        // The external key is generated server-side. Return it from the fake
+        // dynamically while still asserting that normal user-facing requests
+        // finish in this response rather than waiting on the integrations queue.
+        Http::fake(function ($request) {
+            if (str_ends_with($request->url(), '/subscription')) {
+                return Http::response($this->vista360Entitlement());
+            }
+            if (str_ends_with($request->url(), '/catalog-metadata')) {
+                return Http::response(['data' => [
+                    'schema_version' => 3,
+                    'common_fields' => [
+                        ['key' => 'gallery_image_ids', 'type' => 'images', 'required' => false],
+                    ],
+                    'categories' => [[
+                        'id' => 1,
+                        'parent_id' => null,
+                        'product_type' => 'frame',
+                        'fields' => [[
+                            'key' => 'variants',
+                            'type' => 'rows',
+                            'required' => true,
+                            'fields' => [
+                                ['key' => 'option_key', 'type' => 'text', 'required' => true],
+                                ['key' => 'color_name', 'type' => 'text', 'required' => true],
+                                ['key' => 'stock_quantity', 'type' => 'number', 'required' => true, 'step' => '1'],
+                                ['key' => 'image_ids', 'type' => 'images', 'required' => false],
+                            ],
+                        ]],
+                    ]],
+                ]]);
+            }
+            if (str_ends_with($request->url(), '/images')) {
+                return Http::response(['data' => ['id' => 'vista-image']]);
+            }
+            if (str_ends_with($request->url(), '/publications')) {
+                $publication = \App\Models\VistaPublication::withoutGlobalScopes()->firstOrFail();
+
+                return Http::response(['data' => ['external_key' => $publication->external_key, 'product_id' => 77, 'version' => str_repeat('d', 64), 'visible' => true]]);
+            }
+            return Http::response([], 404);
+        });
+
+        app(TenantContext::class)->clear();
+        $response = $this->postJson('/api/v1/products/'.$product->id.'/vista', [
+            'version' => $product->fresh()->version,
+            'quantity' => 3,
+            'creation_key' => Str::uuid()->toString(),
+            'mapping' => [
+                'category_id' => 1,
+                'product_type' => 'frame',
+                'gallery_image_ids' => [],
+                'variants' => [[
+                    'option_key' => (string) Str::uuid(),
+                    'color_name' => 'Black',
+                    'stock_quantity' => 3,
+                    'image_ids' => [(string) $image->id],
+                ]],
+            ],
+        ]);
+
+        $response->assertOk()->assertJsonPath('completed', true)->assertJsonPath('queued', false)->assertJsonPath('data.status', 'completed');
+    }
+
     public function test_provider_errors_are_redacted_and_foreign_shop_relations_are_rejected(): void
     {
         $this->login();

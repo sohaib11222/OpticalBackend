@@ -14,9 +14,46 @@ class CustomerFileReader
 
     public const MAX_COLUMNS = 32;
 
-    public function read(string $path, string $extension, ?string $sheet, string $delimiter): array
+    public function read(string $path, string $extension, ?string $sheet, string $delimiter, bool $automatic = false): array
     {
-        return $extension === 'csv' ? $this->csv($path, $delimiter) : $this->xlsx($path, $sheet);
+        if ($extension === 'csv') {
+            $delimiter = $automatic ? $this->detectDelimiter($path) : $delimiter;
+
+            return $this->csv($path, $delimiter);
+        }
+
+        return $this->xlsx($path, $sheet);
+    }
+
+    private function detectDelimiter(string $path): string
+    {
+        $stream = fopen($path, 'rb');
+        if (! $stream) {
+            throw ValidationException::withMessages(['file' => 'Customer file could not be read.']);
+        }
+        $lines = [];
+        try {
+            while (count($lines) < 5 && ($line = fgets($stream)) !== false) {
+                if (trim($line) !== '') {
+                    $lines[] = $line;
+                }
+            }
+        } finally {
+            fclose($stream);
+        }
+        $best = ',';
+        $score = -1;
+        foreach ([',', ';', "\t", '|'] as $candidate) {
+            $widths = array_map(fn ($line) => count(str_getcsv($line, $candidate, '"', '')), $lines);
+            // Prefer an actual multi-column layout and a consistent width.
+            $candidateScore = (($widths[0] ?? 0) - 1) * 10 + count(array_filter($widths, fn ($width) => $width > 1));
+            if ($candidateScore > $score) {
+                $best = $candidate;
+                $score = $candidateScore;
+            }
+        }
+
+        return $best;
     }
 
     private function csv(string $path, string $delimiter): array
@@ -58,7 +95,7 @@ class CustomerFileReader
             throw ValidationException::withMessages(['file' => 'A header row and at least one data row are required.']);
         }
 
-        return ['headers' => $headers, 'rows' => $rows, 'sheets' => ['CSV'], 'sheet_name' => 'CSV', 'date_system' => 1900];
+        return ['headers' => $headers, 'rows' => $rows, 'sheets' => ['CSV'], 'sheet_name' => 'CSV', 'date_system' => 1900, 'delimiter' => $delimiter];
     }
 
     private function xlsx(string $path, ?string $sheet): array

@@ -8,6 +8,7 @@ use App\Http\Resources\CustomerResource;
 use App\Models\Customer;
 use App\Services\CustomerRegistry;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
 
@@ -23,10 +24,14 @@ class CustomerController extends Controller
         }
         if (! empty($d['search'])) {
             $v = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $d['search']).'%';
-            $q->where(function ($n) use ($v) {
+            $fullName = DB::connection()->getDriverName() === 'sqlite'
+                ? "first_name || ' ' || last_name"
+                : "CONCAT(first_name, ' ', last_name)";
+            $q->where(function ($n) use ($v, $fullName) {
                 foreach (['first_name', 'last_name', 'email', 'phone', 'postal_code'] as $field) {
                     $n->orWhereRaw("$field LIKE ? ESCAPE '!'", [$v]);
                 }
+                $n->orWhereRaw("$fullName LIKE ? ESCAPE '!'", [$v]);
             });
         }
         foreach (['city', 'sex'] as $field) {

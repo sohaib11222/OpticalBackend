@@ -48,6 +48,7 @@ class CustomerWorkflowTest extends TestCase
         $r = $this->postJson('/api/v1/customers', $d)->assertCreated()->assertJsonPath('data.email', 'ada@example.test')->assertJsonPath('data.date_of_birth', '1990-12-10')->assertJsonPath('data.postal_code', '00100');
         $id = $r->json('data.id');
         $this->getJson('/api/v1/customers?search=Ada')->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/v1/customers?search=Ada%20Lovelace')->assertOk()->assertJsonCount(1, 'data');
         $this->getJson('/api/v1/customers/'.$id)->assertOk()->assertJsonPath('data.version', 1);
         $change = array_merge($d, ['version' => 1, 'city' => 'Milano']);
         $this->patchJson('/api/v1/customers/'.$id, $change)->assertOk()->assertJsonPath('data.version', 2);

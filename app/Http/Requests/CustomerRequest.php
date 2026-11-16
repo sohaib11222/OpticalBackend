@@ -23,7 +23,7 @@ class CustomerRequest extends FormRequest
     {
         return self::fieldRules() + [
             'creation_key' => ($this->isMethod('post') && ! $this->is('*/duplicate-check') ? 'required' : 'sometimes').'|uuid', 'version' => $this->isMethod('patch') ? 'required|integer|min:1' : 'prohibited',
-            'confirm_distinct' => 'sometimes|boolean', 'shop_id' => 'prohibited', 'status' => 'prohibited', 'source' => 'prohibited'];
+            'confirm_distinct' => 'sometimes|boolean', 'custom_fields' => 'sometimes|array|max:20', 'custom_fields.*' => 'nullable|string|max:4096', 'shop_id' => 'prohibited', 'status' => 'prohibited', 'source' => 'prohibited'];
     }
 
     public static function fieldRules(): array

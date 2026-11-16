@@ -102,11 +102,13 @@ class PublishVista
         if (! $op) {
             return;
         }
-        $pub = VistaPublication::findOrFail($op->vista_publication_id);
-        $c = VistaConnection::findOrFail($pub->vista_connection_id);
-        abort_unless(in_array($c->status, ['connected', 'syncing'], true) && $c->expires_at?->isFuture(), 409, 'Vista Express access is unavailable. Renew the Vista Express 360 subscription or reconnect before retrying this publication.');
-        $client = app(VistaClient::class);
+        $pub = null;
+        $c = null;
         try {
+            $pub = VistaPublication::findOrFail($op->vista_publication_id);
+            $c = VistaConnection::findOrFail($pub->vista_connection_id);
+            abort_unless(in_array($c->status, ['connected', 'syncing'], true) && $c->expires_at?->isFuture(), 409, 'Vista Express access is unavailable. Renew the Vista Express 360 subscription or reconnect before retrying this publication.');
+            $client = app(VistaClient::class);
             foreach ($op->image_map as $map) {
                 $i = ProductImage::findOrFail($map['local_id']);
                 abort_unless($i->scan_status === 'clean' && $i->display_key && str_starts_with($i->display_key, 'shops/'.$op->shop_id.'/catalog/display/') && ! str_contains($i->display_key, '..'), 409, 'Processed image is unavailable.');
@@ -128,7 +130,7 @@ class PublishVista
                 Audit::record('vista.published', $op->shop_id, $op->actor_id, 'vista_publication', $pub->id);
             });
         } catch (\Throwable $e) {
-            if ($e instanceof VistaFailure && $e->reason === 'vista360_subscription_required') {
+            if ($e instanceof VistaFailure && $e->reason === 'vista360_subscription_required' && $c) {
                 VistaConnection::whereKey($c->id)->update(['status' => 'subscription_required', 'last_error' => $e->getMessage()]);
                 VistaOutbox::whereKey($op->id)->whereNotIn('status', ['completed', 'rejected'])->update([
                     'status' => 'uncertain',
@@ -140,7 +142,9 @@ class PublishVista
             // Only the provider's atomic publication rejection proves that no stock was accepted.
             // Transport failures, auth loss and local failures retain reservations for reconciliation.
             VistaOutbox::whereKey($op->id)->whereNotIn('status', ['completed', 'rejected'])->update(['status' => 'uncertain', 'last_error' => $e instanceof VistaFailure ? $e->getMessage() : 'Publication could not be confirmed. Retry the same operation; allocated stock remains reserved.', 'next_attempt_at' => now()->addMinutes(min(60, 2 ** min($op->attempts, 5)))]);
-            throw new \RuntimeException('Vista publication unconfirmed; retry the saved operation.');
+            // Keep the original exception for server-side diagnostics while
+            // the API continues to expose only the persisted, safe status.
+            throw new \RuntimeException('Vista publication unconfirmed; retry the saved operation.', 0, $e);
         }
     }
 }

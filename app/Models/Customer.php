@@ -11,13 +11,13 @@ class Customer extends Model
 
     public const FIELDS = ['first_name', 'last_name', 'date_of_birth', 'phone', 'email', 'street_address', 'city', 'postal_code', 'sex'];
 
-    protected $fillable = self::FIELDS;
+    protected $fillable = [...self::FIELDS, 'custom_fields'];
 
     protected $hidden = ['creation_key', 'creation_hash', 'phone_normalized'];
 
     protected function casts(): array
     {
-        return ['date_of_birth' => 'date:Y-m-d', 'version' => 'integer'];
+        return ['date_of_birth' => 'date:Y-m-d', 'version' => 'integer', 'custom_fields' => 'array'];
     }
 
     public function events()

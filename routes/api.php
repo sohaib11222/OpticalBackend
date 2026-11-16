@@ -41,6 +41,15 @@ Route::middleware('web')->prefix('v1')->group(function () {
         Route::prefix('shops/{managedShop}/workspace')->whereNumber('managedShop')->middleware([AdminShopContext::class, \App\Http\Middleware\WorkspaceAccess::class])->group(base_path('routes/workspace.php'));
         Route::get('audit', [AdminOperationsController::class, 'audit']);
         Route::get('operations', [AdminOperationsController::class, 'health']);
+        Route::get('vista360/plans', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'plans']);
+        Route::post('vista360/plans', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'store']);
+        Route::put('vista360/plans/{id}', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'update'])->whereNumber('id');
+        Route::post('vista360/plans/{id}/availability', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'availability'])->whereNumber('id');
+        Route::get('vista360/subscriptions', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'subscriptions']);
+        Route::get('vista360/subscriptions/{uuid}', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'subscription'])->whereUuid('uuid');
+        Route::post('vista360/subscriptions/manual-grant', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'manualGrant']);
+        Route::post('vista360/subscriptions/{uuid}/action', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'action'])->whereUuid('uuid');
+        Route::get('vista360/payments', [\App\Http\Controllers\Api\V1\AdminVista360Controller::class, 'payments']);
         Route::get('overview', [AdminController::class, 'overview']);
         Route::get('shops', [AdminController::class, 'shops']);
         Route::patch('shops/{shop}/status', [AdminController::class, 'status']);

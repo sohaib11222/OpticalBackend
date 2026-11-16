@@ -37,7 +37,8 @@ class CustomerRegistry
             foreach (Customer::FIELDS as $field) {
                 $fields[$field] = $d[$field] ?? null;
             }
-            $hash = hash('sha256', json_encode($fields, JSON_THROW_ON_ERROR));
+            $custom = $this->customFields($d['custom_fields'] ?? []);
+            $hash = hash('sha256', json_encode([$fields, $custom], JSON_THROW_ON_ERROR));
             if (! $id && ($previous = Customer::where('creation_key', $d['creation_key'])->first())) {
                 abort_unless(hash_equals($previous->creation_hash, $hash), 409, 'This request key was already used with different details.');
 
@@ -50,6 +51,12 @@ class CustomerRegistry
             }
             abort_if(! ($d['confirm_distinct'] ?? false) && $this->duplicates($fields, $id)->isNotEmpty(), 409, 'Possible duplicate customer. Review the matches and explicitly confirm that this is a distinct record.');
             $c->fill($fields);
+            if ($id) {
+                // Imports only include non-empty additional values. Merge them
+                // so an update never erases an unrelated profile field.
+                $custom = array_replace($c->custom_fields ?? [], $custom);
+            }
+            $c->custom_fields = $custom ?: null;
             $changed = array_keys($c->getDirty());
             $c->phone_normalized = preg_replace('/\D/', '', $fields['phone'] ?? '') ?: null;
             if (! $id) {
@@ -64,6 +71,27 @@ class CustomerRegistry
 
             return [$c, true];
         }, 3);
+    }
+
+    /** @return array<string,string> */
+    private function customFields(mixed $values): array
+    {
+        if (! is_array($values)) {
+            return [];
+        }
+        $clean = [];
+        foreach (array_slice($values, 0, 20, true) as $key => $value) {
+            $key = trim((string) $key);
+            if ($key === '' || mb_strlen($key) > 100 || ! is_scalar($value)) {
+                continue;
+            }
+            $value = trim((string) $value);
+            if ($value !== '' && mb_strlen($value) <= 4096) {
+                $clean[$key] = $value;
+            }
+        }
+
+        return $clean;
     }
 
     public function changeStatus(int $id, array $d, int $actor): Customer

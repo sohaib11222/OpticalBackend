@@ -15,6 +15,6 @@ class CustomerImportRow extends Model
 
     protected function casts(): array
     {
-        return ['raw_values' => 'array', 'parse_errors' => 'array', 'payload' => 'array', 'errors' => 'array', 'matches' => 'array', 'file_duplicate' => 'boolean', 'overwrite_blanks' => 'boolean'];
+        return ['raw_values' => 'array', 'parse_errors' => 'array', 'payload' => 'array', 'custom_fields' => 'array', 'errors' => 'array', 'matches' => 'array', 'file_duplicate' => 'boolean', 'overwrite_blanks' => 'boolean'];
     }
 }

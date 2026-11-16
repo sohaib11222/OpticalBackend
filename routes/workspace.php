@@ -56,6 +56,7 @@ Route::get('customer-imports/{id}/rows', [CustomerImportController::class, 'rows
 Route::patch('customer-imports/{id}/configure', [CustomerImportController::class, 'configure'])->whereNumber('id');
 Route::patch('customer-imports/{id}/mapping', [CustomerImportController::class, 'mapping'])->whereNumber('id');
 Route::patch('customer-imports/{id}/decisions', [CustomerImportController::class, 'decisions'])->whereNumber('id');
+Route::patch('customer-imports/{id}/rows/{row}', [CustomerImportController::class, 'correct'])->whereNumber(['id', 'row']);
 Route::post('customer-imports/{id}/commit', [CustomerImportController::class, 'commit'])->whereNumber('id');
 Route::post('customer-imports/{id}/retry', [CustomerImportController::class, 'retry'])->whereNumber('id');
 Route::get('optical/dictionary', [OpticalController::class, 'dictionary']);

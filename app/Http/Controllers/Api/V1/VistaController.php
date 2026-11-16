@@ -159,9 +159,8 @@ class VistaController extends Controller
         $d['version'] = (int) $d['version'];
         $d['quantity'] = (int) $d['quantity'];
         $op = $service->prepare($product, $d, $r->user()->id);
-        $this->dispatch($op);
 
-        return response()->json(['data' => $op->refresh()], 202);
+        return $this->deliverPublication($service, $op);
     }
 
     private function dispatch(VistaOutbox $op): void
@@ -172,6 +171,46 @@ class VistaController extends Controller
         }
     }
 
+    /**
+     * Try small publications now so the product editor can tell the seller
+     * whether Vista accepted it.  The durable outbox remains the source of
+     * truth and is retained for a larger image batch or a recoverable outage.
+     */
+    private function deliverPublication(PublishVista $service, VistaOutbox $op)
+    {
+        $sync = (bool) config('vista.publications_sync');
+        $smallEnough = count($op->image_map ?? []) <= (int) config('vista.publications_sync_max_images');
+        if ($sync && $smallEnough) {
+            try {
+                $service->run($op);
+            } catch (\Throwable $e) {
+                // PublishVista has persisted an honest durable state and a
+                // safe error before it throws.  Returning it lets the UI show
+                // a failure toast instead of incorrectly claiming it queued.
+                report($e);
+            }
+            $fresh = $op->fresh();
+
+            return response()->json([
+                'data' => $fresh,
+                'completed' => $fresh->status === 'completed',
+                'queued' => false,
+                'message' => $fresh->status === 'completed'
+                    ? 'Product was published to Vista Express.'
+                    : ($fresh->last_error ?? 'Vista Express could not confirm this publication.'),
+            ], $fresh->status === 'completed' ? 200 : 202);
+        }
+
+        $this->dispatch($op);
+
+        return response()->json([
+            'data' => $op->refresh(),
+            'completed' => false,
+            'queued' => true,
+            'message' => 'This larger image set is being published in the background. You can safely leave this page.',
+        ], 202);
+    }
+
     public function retry(Request $r, int $operation)
     {
         $this->permit('integrations.publish');
@@ -180,9 +219,8 @@ class VistaController extends Controller
         abort_unless(in_array($op->status, ['pending', 'uncertain']), 409, 'This operation cannot be retried.');
         $op->actor_id = $r->user()->id;
         $op->save();
-        $this->dispatch($op);
 
-        return response()->json(['data' => $op->refresh()], 202);
+        return $this->deliverPublication(app(PublishVista::class), $op);
     }
 
     public function cancel(Request $r, VistaClient $client, int $operation)
