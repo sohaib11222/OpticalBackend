@@ -18,6 +18,7 @@ use App\Services\Operations\ReminderPlanner;
 use App\Tenancy\TenantContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class CommunicationController extends Controller
 {
@@ -26,7 +27,7 @@ class CommunicationController extends Controller
         Access::require('communications.send');
         Access::require('customers.read');
         return $r->validate([
-            'customer_ids' => 'required|array|min:1|max:100', 'customer_ids.*' => 'required|integer|min:1|distinct',
+            'customer_ids' => 'required|array|min:1|max:1000', 'customer_ids.*' => 'required|integer|min:1|distinct',
             'channel' => 'required|in:email', 'purpose' => 'required|in:service,marketing',
             'subject' => 'required_if:channel,email|nullable|string|max:200', 'body' => 'required|string|max:4000',
             'scheduled_at' => 'nullable|date|after_or_equal:now', 'delay_minutes' => 'nullable|integer|min:0|max:525600',
@@ -43,7 +44,12 @@ class CommunicationController extends Controller
     {
         $batch = $bulk->send($this->bulkData($r), $r->user()->id);
         $messages = CustomerMessage::whereIn('id', $batch->message_ids)->get();
-        $messages = $messages->map(fn (CustomerMessage $message) => app(Messages::class)->deliverImmediately($message));
+        // A small group receives the same immediate experience as an
+        // individual email. Larger groups are already safely queued by the
+        // durable message service so the web request never times out.
+        if ($messages->count() <= 25) {
+            $messages = $messages->map(fn (CustomerMessage $message) => app(Messages::class)->deliverImmediately($message));
+        }
         return response()->json(['data' => $batch, 'messages' => $messages], 201);
     }
 
@@ -52,6 +58,72 @@ class CommunicationController extends Controller
         Access::require('communications.read');
 
         return ['data' => ['email' => $provider->ready('email'), 'email_issues' => $provider->emailIssues(), 'immediate_email' => (bool) config('communications.email_sync'), 'variables' => Messages::VARIABLES, 'processing' => OperationsHealth::status()]];
+    }
+
+    /** Resolve a tenant-scoped selection before opening the bulk composer. */
+    public function recipients(Request $r)
+    {
+        Access::require('communications.send');
+        Access::require('customers.read');
+        $d = $r->validate([
+            'mode' => ['required', Rule::in(['ids', 'filtered', 'active_filtered', 'range'])],
+            'ids' => 'required_if:mode,ids|array|min:1|max:1000',
+            'ids.*' => 'integer|min:1|distinct',
+            'filters' => 'nullable|array',
+            'filters.search' => 'nullable|string|max:150',
+            'filters.status' => ['nullable', Rule::in(['active', 'archived', 'all'])],
+            'filters.city' => 'nullable|string|max:100',
+            'filters.sort' => ['nullable', Rule::in(['last_name', 'first_name', 'created_at'])],
+            'filters.direction' => 'nullable|in:asc,desc',
+            'start_row' => 'required_if:mode,range|integer|min:1|max:1000000',
+            'end_row' => 'required_if:mode,range|integer|min:1|max:1000000|gte:start_row',
+        ]);
+
+        if ($d['mode'] === 'ids') {
+            $ids = array_values(array_unique(array_map('intval', $d['ids'])));
+            abort_unless(Customer::whereIn('id', $ids)->count() === count($ids), 404, 'One or more selected customers are unavailable.');
+
+            return ['data' => ['ids' => $ids, 'count' => count($ids)]];
+        }
+
+        $q = $this->customerQuery($d['filters'] ?? []);
+        if ($d['mode'] === 'active_filtered') {
+            $q->where('status', 'active');
+        }
+        $q->orderBy(($d['filters']['sort'] ?? 'last_name'), ($d['filters']['direction'] ?? 'asc'))->orderBy('id');
+        if ($d['mode'] === 'range') {
+            $rangeLength = $d['end_row'] - $d['start_row'] + 1;
+            abort_if($rangeLength > 1000, 422, 'A row range can contain at most 1,000 customers.');
+            $ids = $q->skip($d['start_row'] - 1)->take($rangeLength)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        } else {
+            $ids = $q->limit(1001)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        }
+        abort_if(count($ids) > 1000, 422, 'Choose a narrower filter or a row range of at most 1,000 customers.');
+
+        return ['data' => ['ids' => $ids, 'count' => count($ids)]];
+    }
+
+    private function customerQuery(array $filters)
+    {
+        $q = Customer::query();
+        if (($filters['status'] ?? 'active') !== 'all') {
+            $q->where('status', $filters['status'] ?? 'active');
+        }
+        if (! empty($filters['search'])) {
+            $v = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $filters['search']).'%';
+            $fullName = DB::connection()->getDriverName() === 'sqlite' ? "first_name || ' ' || last_name" : "CONCAT(first_name, ' ', last_name)";
+            $q->where(function ($nested) use ($v, $fullName) {
+                foreach (['first_name', 'last_name', 'email', 'phone', 'postal_code'] as $field) {
+                    $nested->orWhereRaw("$field LIKE ? ESCAPE '!'", [$v]);
+                }
+                $nested->orWhereRaw("$fullName LIKE ? ESCAPE '!'", [$v]);
+            });
+        }
+        if (! empty($filters['city'])) {
+            $q->where('city', $filters['city']);
+        }
+
+        return $q;
     }
 
     public function templates()
@@ -115,9 +187,9 @@ class CommunicationController extends Controller
     public function index(Request $r)
     {
         Access::require('communications.read');
-        $d = $r->validate(['customer_id' => 'nullable|integer', 'channel' => 'nullable|in:email', 'status' => 'nullable|string|max:30', 'page' => 'nullable|integer|min:1']);
+        $d = $r->validate(['customer_id' => 'nullable|integer', 'channel' => 'nullable|in:email', 'purpose' => 'nullable|in:service,marketing', 'status' => 'nullable|string|max:30', 'date_from' => 'nullable|date_format:Y-m-d', 'date_to' => 'nullable|date_format:Y-m-d|after_or_equal:date_from', 'page' => 'nullable|integer|min:1']);
 
-        return CustomerMessage::with('customer:id,first_name,last_name')->when($d['customer_id'] ?? null, fn ($q, $v) => $q->where('customer_id', $v))->when($d['channel'] ?? null, fn ($q, $v) => $q->where('channel', $v))->when($d['status'] ?? null, fn ($q, $v) => $q->where('status', $v))->orderByDesc('id')->paginate(25);
+        return CustomerMessage::with('customer:id,first_name,last_name')->when($d['customer_id'] ?? null, fn ($q, $v) => $q->where('customer_id', $v))->when($d['channel'] ?? null, fn ($q, $v) => $q->where('channel', $v))->when($d['purpose'] ?? null, fn ($q, $v) => $q->where('purpose', $v))->when($d['status'] ?? null, fn ($q, $v) => $q->where('status', $v))->when($d['date_from'] ?? null, fn ($q, $v) => $q->whereDate('scheduled_at', '>=', $v))->when($d['date_to'] ?? null, fn ($q, $v) => $q->whereDate('scheduled_at', '<=', $v))->orderByDesc('id')->paginate(25);
     }
 
     public function show(int $id)

@@ -132,6 +132,27 @@ class ClientExtensionTest extends TestCase
             ->assertOk()->assertJsonPath('data.rows.1.reason', 'duplicate_recipient');
     }
 
+    public function test_bulk_recipient_selection_respects_current_filters_and_row_ranges(): void
+    {
+        $second = $this->postJson('/api/v1/customers', [
+            'first_name' => 'Aaron', 'last_name' => 'Second', 'email' => 'aaron@example.test',
+            'creation_key' => (string) Str::uuid(),
+        ])->assertCreated()->json('data.id');
+        $third = $this->postJson('/api/v1/customers', [
+            'first_name' => 'Zoe', 'last_name' => 'Third', 'email' => 'zoe@example.test',
+            'creation_key' => (string) Str::uuid(),
+        ])->assertCreated()->json('data.id');
+
+        $this->postJson('/api/v1/communications/recipients', [
+            'mode' => 'filtered', 'filters' => ['search' => 'aaron', 'status' => 'active', 'sort' => 'last_name', 'direction' => 'asc'],
+        ])->assertOk()->assertJsonPath('data.ids.0', $second)->assertJsonPath('data.count', 1);
+
+        $this->postJson('/api/v1/communications/recipients', [
+            'mode' => 'range', 'start_row' => 2, 'end_row' => 3,
+            'filters' => ['status' => 'active', 'sort' => 'first_name', 'direction' => 'asc'],
+        ])->assertOk()->assertJsonCount(2, 'data.ids')->assertJsonPath('data.ids.1', $third);
+    }
+
     public function test_explicit_email_opt_out_still_blocks_delivery(): void
     {
         $this->postJson('/api/v1/customers/'.$this->customer.'/consents', [

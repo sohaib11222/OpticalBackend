@@ -178,6 +178,32 @@ class VistaIntegrationTest extends TestCase
         $this->assertDatabaseHas('customers', ['first_name' => 'Vista', 'source' => 'vista_express']);
     }
 
+    public function test_selected_vista_customers_import_safe_rows_and_keep_duplicates_for_review(): void
+    {
+        $this->login();
+        $this->context();
+        $connection = VistaConnection::firstOrFail();
+        $record = VistaRecord::create([
+            'vista_connection_id' => $connection->id,
+            'kind' => 'customers',
+            'remote_id' => 'auto-customer-1',
+            'payload' => ['name' => 'Automatic Customer', 'email' => 'automatic@example.test', 'phone' => '+390611111111'],
+            'seen_run' => 'test-auto-import',
+            'observed_at' => now(),
+            'unavailable' => false,
+        ]);
+        app(TenantContext::class)->clear();
+        $batch = $this->postJson('/api/v1/integrations/vista/customer-imports', [
+            'automatic' => true, 'rows' => [['id' => $record->id]],
+        ])->assertCreated()->assertJsonPath('data.status', 'completed')->json('data');
+        $this->assertDatabaseHas('customers', ['first_name' => 'Automatic', 'last_name' => 'Customer', 'source' => 'vista_express']);
+
+        $this->postJson('/api/v1/integrations/vista/customer-imports', [
+            'automatic' => true, 'rows' => [['id' => $record->id]],
+        ])->assertOk()->assertJsonPath('data.id', $batch['id']);
+        $this->assertDatabaseCount('customers', 1);
+    }
+
     public function test_publication_reserves_stock_and_ambiguous_failure_retries_exactly_once(): void
     {
         $this->login();

@@ -8,6 +8,7 @@ use App\Integrations\Vista\PublishVista;
 use App\Integrations\Vista\ScheduleVistaSync;
 use App\Integrations\Vista\VistaClient;
 use App\Jobs\PublishVistaProduct;
+use App\Jobs\ProcessCustomerImport;
 use App\Jobs\SyncVista;
 use App\Models\CustomerImport;
 use App\Models\Product;
@@ -36,21 +37,23 @@ class VistaController extends Controller
         foreach (['integrations.read', 'imports.write', 'customers.write'] as $p) {
             $this->permit($p);
         }
-        $d = $r->validate(['rows' => 'required|array|min:1|max:100', 'rows.*.id' => 'required|integer|min:1|distinct', 'rows.*.first_name' => 'required|string|max:100', 'rows.*.last_name' => 'required|string|max:100']);
+        $d = $r->validate(['rows' => 'required|array|min:1|max:100', 'rows.*.id' => 'required|integer|min:1|distinct', 'rows.*.first_name' => 'nullable|string|max:100', 'rows.*.last_name' => 'nullable|string|max:100', 'automatic' => 'sometimes|boolean']);
+        $automatic = (bool) ($d['automatic'] ?? false);
         $c = VistaConnection::firstOrFail();
         abort_if($c->status === 'disconnected', 409, 'Reconnect first.');
-        $b = DB::transaction(function () use ($d, $c, $r) {
+        $b = DB::transaction(function () use ($d, $c, $r, $automatic) {
             ShopLock::acquire();
             $rows = [];
             foreach ($d['rows'] as $choice) {
                 $record = VistaRecord::where('vista_connection_id', $c->id)->where('kind', 'customers')->where('unavailable', false)->findOrFail($choice['id']);
-                $rows[] = ['remote_id' => $record->remote_id, 'values' => [$choice['first_name'], $choice['last_name'], $record->payload['email'] ?? '', $record->payload['phone'] ?? '']];
+                [$first, $last] = $this->customerNames($choice, $record);
+                $rows[] = ['remote_id' => $record->remote_id, 'values' => [$first, $last, $record->payload['email'] ?? '', $record->payload['phone'] ?? '']];
             }
-            $hash = hash('sha256', 'vista:'.$c->id.':'.json_encode($rows, JSON_THROW_ON_ERROR));
+            $hash = hash('sha256', 'vista:'.$c->id.':'.($automatic ? 'automatic' : 'review').':'.json_encode($rows, JSON_THROW_ON_ERROR));
             if ($old = CustomerImport::where('source_hash', $hash)->first()) {
                 return $old;
             }
-            $b = CustomerImport::create(['file_id' => null, 'source_kind' => 'vista_express', 'vista_connection_id' => $c->id, 'source_hash' => $hash, 'headers' => ['First name', 'Last name', 'Email', 'Phone'], 'mapping' => ['first_name' => 0, 'last_name' => 1, 'email' => 2, 'phone' => 3], 'date_format' => 'Y-m-d', 'delimiter' => ',', 'total_rows' => count($rows), 'created_by' => $r->user()->id, 'status' => 'previewing', 'stage' => 'preview']);
+            $b = CustomerImport::create(['file_id' => null, 'source_kind' => 'vista_express', 'vista_connection_id' => $c->id, 'source_hash' => $hash, 'headers' => ['First name', 'Last name', 'Email', 'Phone'], 'mapping' => ['first_name' => 0, 'last_name' => 1, 'email' => 2, 'phone' => 3], 'date_format' => 'Y-m-d', 'delimiter' => ',', 'automatic' => $automatic, 'total_rows' => count($rows), 'created_by' => $r->user()->id, 'status' => 'previewing', 'stage' => 'preview']);
             foreach ($rows as $i => $row) {
                 $b->rows()->create(['row_number' => $i + 1, 'creation_key' => Str::uuid()->toString(), 'raw_values' => $row['values'], 'parse_errors' => []]);
             }
@@ -60,7 +63,50 @@ class VistaController extends Controller
             return $b;
         });
 
-        return response()->json(['data' => $b], 201);
+        $b = $b->fresh();
+        if (! $automatic) {
+            return response()->json(['data' => $b], 201);
+        }
+        // An identical selection has a stable source hash. Return its prior
+        // result instead of scheduling a second import or creating duplicates.
+        if ($b->status !== 'ready' || $b->processed_rows > 0) {
+            return response()->json(['data' => $b], 200);
+        }
+        if ($b->rows()->where('decision', 'create')->where('status', 'pending')->doesntExist()) {
+            // Every selected record needs a duplicate/identity decision. The
+            // batch remains available for review; no duplicate is created.
+            return response()->json(['data' => $b], 201);
+        }
+        // Vista selections follow the same safe import pipeline as CSV files:
+        // non-duplicate rows are imported automatically, while duplicates stay
+        // in the batch for an explicit review instead of silently merging.
+        $b = app(CustomerImports::class)->commit($b->id, ['version' => $b->version]);
+        try {
+            if (config('documents.customer_imports_sync')) {
+                (new ProcessCustomerImport($b->shop_id, $r->user()->id, $b->id, $b->version))->handle(app(CustomerImports::class));
+            } else {
+                ProcessCustomerImport::dispatch($b->shop_id, $r->user()->id, $b->id, $b->version)->afterCommit();
+            }
+        } catch (\Throwable $e) {
+            $b->forceFill(['status' => 'failed', 'last_error' => 'Customer import could not be started. Retry the import from its details page.'])->save();
+            report($e);
+        }
+
+        return response()->json(['data' => $b->fresh()], config('documents.customer_imports_sync') ? 201 : 202);
+    }
+
+    /** Derive a safe display name from Vista's currently public customer snapshot. */
+    private function customerNames(array $choice, VistaRecord $record): array
+    {
+        $first = trim((string) ($choice['first_name'] ?? ''));
+        $last = trim((string) ($choice['last_name'] ?? ''));
+        if ($first !== '' && $last !== '') {
+            return [$first, $last];
+        }
+        $parts = preg_split('/\s+/', trim((string) ($record->payload['name'] ?? '')), 2, PREG_SPLIT_NO_EMPTY) ?: [];
+        abort_unless(count($parts) >= 2, 422, 'A selected Vista customer needs a first and last name before import.');
+
+        return [$first !== '' ? $first : $parts[0], $last !== '' ? $last : $parts[1]];
     }
 
     public function show()
