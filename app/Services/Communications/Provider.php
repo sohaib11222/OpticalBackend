@@ -34,8 +34,6 @@ class Provider
         if (! filter_var(config('communications.aruba.from_address'), FILTER_VALIDATE_EMAIL)) $issues[] = 'Set a valid ARUBA_FROM_ADDRESS.';
         if (! in_array(config('communications.aruba.host'), ['smtps.aruba.it', 'smtp.aruba.it'], true)) $issues[] = 'ARUBA_SMTP_HOST must be smtps.aruba.it or smtp.aruba.it.';
         if (! in_array((int) config('communications.aruba.port'), [465, 587], true)) $issues[] = 'ARUBA_SMTP_PORT must be 465 (TLS) or 587 (STARTTLS).';
-        $url = config('communications.public_url', '');
-        if (! filter_var($url, FILTER_VALIDATE_URL) || parse_url($url, PHP_URL_SCHEME) !== 'https') $issues[] = 'Set COMMUNICATIONS_PUBLIC_URL to the public HTTPS API URL for unsubscribe links.';
         return $issues;
     }
 
@@ -58,7 +56,32 @@ class Provider
         if ($m->channel === 'email') {
             $settings = config('communications.aruba');
             $transport = $this->emailTransport();
-            $email = (new Email)->from(new Address($settings['from_address'], Shop::findOrFail($m->shop_id)->name.' / '.$settings['from_name']))->to($m->recipient)->subject($m->subject)->text($m->body."\n\nUnsubscribe / Disiscriviti: ".config('communications.public_url').'/api/v1/communications/preferences/'.$m->public_id.'/'.hash_hmac('sha256', 'unsubscribe:'.$m->public_id, config('app.key')));
+            $shop = Shop::findOrFail($m->shop_id);
+            $customer = $m->customer;
+            $greeting = $customer
+                ? 'Gentile '.$customer->first_name.' '.$customer->last_name.','
+                : 'Gentile cliente,';
+            $brand = (string) $settings['from_name'];
+            $html = view('mail.vista-360', [
+                'brand' => $brand,
+                'subject' => $m->subject,
+                'preheader' => $m->subject,
+                'headline' => $m->subject,
+                'greeting' => $greeting,
+                'body' => $m->body,
+                'note' => 'Messaggio inviato da '.$shop->name.'.',
+            ])->render();
+            $text = trim($m->subject)."\n\n".trim($m->body)."\n\n".$brand;
+            $email = (new Email)
+                ->from(new Address($settings['from_address'], $brand))
+                ->to($m->recipient)
+                ->subject($m->subject)
+                ->html($html)
+                ->text($text);
+            $replyTo = $settings['reply_to_address'] ?? null;
+            if (filter_var($replyTo, FILTER_VALIDATE_EMAIL)) {
+                $email->replyTo(new Address($replyTo, $settings['reply_to_name'] ?? $brand));
+            }
             $email->getHeaders()->addIdHeader('Message-ID', $m->public_id.'@'.explode('@', $settings['from_address'])[1]);
             try {
                 $this->deliverEmail($email, $transport);

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\SupportTicket;
 use App\Models\SupportTicketMessage;
 use App\Models\User;
+use App\Notifications\SupportTicketUpdated;
 use App\Services\Commerce\ShopLock;
 use App\Tenancy\TenantContext;
 use Illuminate\Support\Facades\DB;
@@ -103,6 +104,7 @@ class SupportTickets
                 'updated_at' => now(),
             ]);
             $this->notifyUsers($ticket->shop_id, $ticketId, [$ticket->created_by], 'admin_reply');
+            $this->notifyCreatorByEmail($ticket, 'admin_reply', $body);
             Audit::record('support_ticket.admin_reply', $ticket->shop_id, $actorId, 'support_ticket', $ticketId);
 
             return (array) DB::table('support_tickets')->where('id', $ticketId)->first();
@@ -131,6 +133,9 @@ class SupportTickets
             DB::table('support_tickets')->where('id', $ticketId)->update($changes);
             $recipients = array_filter([$ticket->created_by, $changes['assigned_to']]);
             $this->notifyUsers($ticket->shop_id, $ticketId, $recipients, 'ticket_updated');
+            if ($status !== $ticket->status) {
+                $this->notifyCreatorByEmail($ticket, 'ticket_status_changed');
+            }
             Audit::record('support_ticket.admin_updated', $ticket->shop_id, $actorId, 'support_ticket', $ticketId);
 
             return (array) DB::table('support_tickets')->where('id', $ticketId)->first();
@@ -155,5 +160,26 @@ class SupportTickets
             'created_at' => now(),
             'updated_at' => now(),
         ], $ids));
+    }
+
+    /** @param object $ticket A locked support_tickets record from the current transaction. */
+    private function notifyCreatorByEmail(object $ticket, string $kind, ?string $reply = null): void
+    {
+        $creator = User::whereKey($ticket->created_by)
+            ->where('account_type', 'shop')
+            ->where('status', 'active')
+            ->first();
+
+        if (! $creator || ! filter_var($creator->email, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $creator->notify(new SupportTicketUpdated(
+            (int) $ticket->id,
+            (string) $ticket->public_id,
+            (string) $ticket->subject,
+            $kind,
+            $reply,
+        ));
     }
 }

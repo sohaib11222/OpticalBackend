@@ -14,19 +14,35 @@ either React application and never in Git:
 ```dotenv
 COMMUNICATIONS_EMAIL_ENABLED=true
 COMMUNICATIONS_EMAIL_SYNC=true
-COMMUNICATIONS_PUBLIC_URL=https://api.vistaexpressbusiness.com
 ARUBA_SMTP_HOST=smtps.aruba.it
 ARUBA_SMTP_PORT=465
 ARUBA_SMTP_USERNAME=your-full-aruba-mailbox@example.com
 ARUBA_SMTP_PASSWORD=your-aruba-mailbox-password
 ARUBA_FROM_ADDRESS=your-full-aruba-mailbox@example.com
 ARUBA_FROM_NAME="Vista Express 360"
+ARUBA_REPLY_TO_ADDRESS=your-full-aruba-mailbox@example.com
+ARUBA_REPLY_TO_NAME="Vista Express 360"
+
+# The same Aruba mailbox delivers registration, reset, security-code and
+# support-ticket email. Do not leave these as an unrelated test/Gmail sender.
+MAIL_MAILER=smtp
+MAIL_SCHEME=smtps
+MAIL_HOST=smtps.aruba.it
+MAIL_PORT=465
+MAIL_REQUIRE_TLS=true
+MAIL_USERNAME=your-full-aruba-mailbox@example.com
+MAIL_PASSWORD=your-aruba-mailbox-password
+MAIL_FROM_ADDRESS=your-full-aruba-mailbox@example.com
+MAIL_FROM_NAME="Vista Express 360"
+MAIL_REPLY_TO_ADDRESS=your-full-aruba-mailbox@example.com
+MAIL_REPLY_TO_NAME="Vista Express 360"
+MAIL_USE_ARUBA=true
 ```
 
 Port `465` uses implicit TLS. Port `587` is supported only for an Aruba mailbox
 configured for STARTTLS. The configured From address must be authorized for the
-mailbox. Authentication/account-verification mail may use separate `MAIL_*`
-settings; customer communication does not fall back to Gmail accidentally.
+mailbox. Customer, registration, password-reset, password-code and support
+emails now share this single sender configuration.
 
 Apply configuration and validate it without sending a message:
 
@@ -55,8 +71,9 @@ It does not disclose credentials or send a message.
    addresses, invalid addresses, archived customers and explicit email opt-outs
    stop the bulk operation before any email is sent.
 
-Existing explicit email opt-outs and unsubscribe links remain respected. New
-manual or bulk email does not require a consent-recording step.
+Existing explicit email opt-outs remain respected. New manual or bulk email
+does not require a consent-recording step. Customer-facing email no longer
+contains raw API or provider unsubscribe links.
 
 ## Scheduler for future messages
 

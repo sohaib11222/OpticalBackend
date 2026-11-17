@@ -22,5 +22,7 @@ return [
         'host' => strtolower(trim((string) env('ARUBA_SMTP_HOST', $useMail ? $mailHost : 'smtps.aruba.it'))), 'port' => (int) env('ARUBA_SMTP_PORT', $useMail ? env('MAIL_PORT', 465) : 465),
         'username' => env('ARUBA_SMTP_USERNAME') ?: ($useMail ? env('MAIL_USERNAME') : null), 'password' => env('ARUBA_SMTP_PASSWORD') ?: ($useMail ? env('MAIL_PASSWORD') : null),
         'from_address' => env('ARUBA_FROM_ADDRESS') ?: ($useMail ? env('MAIL_FROM_ADDRESS') : null), 'from_name' => env('ARUBA_FROM_NAME', 'Vista Express 360'),
+        'reply_to_address' => env('ARUBA_REPLY_TO_ADDRESS') ?: env('MAIL_REPLY_TO_ADDRESS') ?: env('ARUBA_FROM_ADDRESS') ?: ($useMail ? env('MAIL_FROM_ADDRESS') : null),
+        'reply_to_name' => env('ARUBA_REPLY_TO_NAME') ?: env('MAIL_REPLY_TO_NAME') ?: env('ARUBA_FROM_NAME', 'Vista Express 360'),
     ],
 ];

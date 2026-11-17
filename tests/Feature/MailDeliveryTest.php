@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Mockery;
 use RuntimeException;
+use Symfony\Component\Process\Process;
 use Symfony\Component\Mime\Email;
 use Tests\TestCase;
 
@@ -47,6 +48,27 @@ class MailDeliveryTest extends TestCase
             ->doesntExpectOutputToContain('synthetic-secret')
             ->doesntExpectOutputToContain('synthetic@gmail.com')
             ->assertSuccessful();
+    }
+
+    public function test_configured_aruba_mailbox_is_shared_by_auth_notifications_even_with_legacy_mail_values(): void
+    {
+        $process = new Process([
+            PHP_BINARY,
+            '-r',
+            'require "vendor/autoload.php"; $c = require "config/mail.php"; echo json_encode([$c["default"], $c["mailers"]["smtp"]["host"], $c["mailers"]["smtp"]["username"], $c["from"]["address"]]);',
+        ], base_path(), [
+            'ARUBA_SMTP_HOST' => 'smtps.aruba.it',
+            'ARUBA_SMTP_PORT' => '465',
+            'ARUBA_SMTP_USERNAME' => 'info@example.test',
+            'ARUBA_SMTP_PASSWORD' => 'test-only-password',
+            'ARUBA_FROM_ADDRESS' => 'info@example.test',
+            // A legacy test mailbox must not split auth and customer mail.
+            'MAIL_HOST' => 'smtp.gmail.com',
+            'MAIL_USERNAME' => 'legacy@example.test',
+        ]);
+        $process->mustRun();
+
+        $this->assertSame(['smtp', 'smtps.aruba.it', 'info@example.test', 'info@example.test'], json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR));
     }
 
     public function test_missing_credentials_and_unsafe_gmail_settings_fail_before_sending(): void
@@ -96,7 +118,7 @@ class MailDeliveryTest extends TestCase
             $message = new Message(new Email);
             $callback($message);
             $this->assertSame('tester@example.test', $message->getSymfonyMessage()->getTo()[0]->getAddress());
-            $this->assertStringContainsString('does not verify an account', $body);
+            $this->assertStringContainsString('non conferma alcun account', $body);
 
             return true;
         });

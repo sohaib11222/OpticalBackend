@@ -2,6 +2,7 @@
 
 namespace App\Notifications;
 
+use App\Notifications\Concerns\BuildsBrandedMail;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -9,7 +10,7 @@ use Illuminate\Notifications\Notification;
 /** A short-lived code is deliberately sent synchronously so the UI never claims it was sent when SMTP rejected it. */
 class VerifyPasswordChangeCode extends Notification
 {
-    use Queueable;
+    use BuildsBrandedMail, Queueable;
 
     public function __construct(private readonly string $code, private readonly int $minutes)
     {
@@ -22,11 +23,14 @@ class VerifyPasswordChangeCode extends Notification
 
     public function toMail(object $notifiable): MailMessage
     {
-        return (new MailMessage)
-            ->subject('Verify your password change')
-            ->greeting('Hello '.$notifiable->name.',')
-            ->line('Use this verification code to change the password for your Vista Express 360 account:')
-            ->line('# '.$this->code)
-            ->line('This code expires in '.$this->minutes.' minutes. If you did not request it, you can ignore this email.');
+        return $this->brandedMail([
+            'subject' => 'Codice di verifica per la password',
+            'preheader' => 'Usa questo codice per modificare la tua password.',
+            'headline' => 'Conferma la modifica della password',
+            'greeting' => 'Ciao '.$notifiable->name.',',
+            'body' => 'Inserisci il seguente codice in Vista Express 360 per confermare la modifica della password.',
+            'code' => $this->code,
+            'note' => 'Il codice scade tra '.$this->minutes.' minuti. Se non hai richiesto questa modifica, ignora questa email.',
+        ]);
     }
 }

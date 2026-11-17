@@ -6,8 +6,10 @@ use App\Models\Role;
 use App\Models\Shop;
 use App\Models\ShopMembership;
 use App\Models\User;
+use App\Notifications\SupportTicketUpdated;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
 class SupportTicketTest extends TestCase
@@ -36,6 +38,7 @@ class SupportTicketTest extends TestCase
 
     public function test_shop_and_platform_can_track_a_ticket_conversation_with_isolated_notifications(): void
     {
+        Notification::fake();
         $admin = User::factory()->create(['account_type' => 'admin', 'email' => 'support-admin@example.test', 'password' => self::PASS]);
         $this->login($this->owner);
         $ticket = $this->postJson('/api/v1/support/tickets', [
@@ -67,5 +70,10 @@ class SupportTicketTest extends TestCase
         $this->postJson('/api/v1/support/tickets/'.$ticket['id'].'/messages', ['body' => 'Thank you, please continue.'])->assertOk();
         $this->patchJson('/api/v1/support/tickets/'.$ticket['id'].'/status', ['status' => 'closed', 'version' => $detail['version'] + 1])
             ->assertOk()->assertJsonPath('data.status', 'closed');
+
+        // Only the shop user who created this ticket receives email updates;
+        // administrators retain their in-app workflow and are not copied.
+        Notification::assertSentTo($this->owner, SupportTicketUpdated::class, 2);
+        Notification::assertNotSentTo($admin, SupportTicketUpdated::class);
     }
 }

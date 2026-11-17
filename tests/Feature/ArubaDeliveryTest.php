@@ -41,9 +41,9 @@ class ArubaDeliveryTest extends TestCase
     {
         $this->configureEmail();
         config(['communications.aruba.port' => 25, 'communications.aruba.from_address' => 'invalid',
-            'communications.public_url' => 'http://localhost', 'communications.aruba.username' => null]);
+            'communications.aruba.username' => null]);
         $issues = implode(' ', (new Provider)->emailIssues());
-        foreach (['ARUBA_SMTP_PORT', 'ARUBA_FROM_ADDRESS', 'COMMUNICATIONS_PUBLIC_URL', 'ARUBA_SMTP_USERNAME'] as $key) $this->assertStringContainsString($key, $issues);
+        foreach (['ARUBA_SMTP_PORT', 'ARUBA_FROM_ADDRESS', 'ARUBA_SMTP_USERNAME'] as $key) $this->assertStringContainsString($key, $issues);
         $this->assertStringNotContainsString('test-only-secret', $issues);
         $this->assertFalse((new Provider)->ready('email'));
     }
@@ -93,7 +93,9 @@ class ArubaDeliveryTest extends TestCase
         $this->assertCount(1,$provider->email->getTo());
         $this->assertSame('customer@example.test',$provider->email->getTo()[0]->getAddress());
         $this->assertSame('sender@example.test',$provider->email->getFrom()[0]->getAddress());
-        $this->assertStringContainsString('/communications/preferences/',$provider->email->getTextBody());
+        $this->assertStringNotContainsString('/api/',$provider->email->getTextBody());
+        $this->assertStringNotContainsString('Disiscriviti',$provider->email->getTextBody());
+        $this->assertStringContainsString('Vista Express 360',$provider->email->getHtmlBody());
         $this->assertSame('Your next visit',$provider->email->getSubject());
         $provider->fail=true;
         try { $provider->send($message); $this->fail('An ambiguous SMTP failure must not be treated as delivered'); }

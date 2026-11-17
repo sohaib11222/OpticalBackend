@@ -1,5 +1,16 @@
 <?php
 
+// Authentication and system notifications use Laravel's mailer, whereas
+// customer mail also has Aruba-specific diagnostics.  Keep both paths on the
+// same mailbox when only ARUBA_SMTP_* is configured.
+$arubaHost = env('ARUBA_SMTP_HOST');
+$arubaPort = (int) env('ARUBA_SMTP_PORT', 465);
+$arubaUsername = env('ARUBA_SMTP_USERNAME');
+$usesAruba = filter_var(
+    env('MAIL_USE_ARUBA', ! empty($arubaHost) && ! empty($arubaUsername) ? 'true' : 'false'),
+    FILTER_VALIDATE_BOOL,
+);
+
 return [
 
     /*
@@ -14,7 +25,7 @@ return [
     |
     */
 
-    'default' => env('MAIL_MAILER', 'log'),
+    'default' => $usesAruba ? 'smtp' : env('MAIL_MAILER', 'log'),
 
     /*
     |--------------------------------------------------------------------------
@@ -39,12 +50,12 @@ return [
 
         'smtp' => [
             'transport' => 'smtp',
-            'scheme' => env('MAIL_SCHEME'),
+            'scheme' => $usesAruba ? env('ARUBA_SMTP_SCHEME', $arubaPort === 465 ? 'smtps' : 'smtp') : env('MAIL_SCHEME'),
             'url' => env('MAIL_URL'),
-            'host' => env('MAIL_HOST', '127.0.0.1'),
-            'port' => env('MAIL_PORT', 2525),
-            'username' => env('MAIL_USERNAME'),
-            'password' => env('MAIL_PASSWORD'),
+            'host' => $usesAruba ? $arubaHost : env('MAIL_HOST', '127.0.0.1'),
+            'port' => $usesAruba ? $arubaPort : env('MAIL_PORT', 2525),
+            'username' => $usesAruba ? $arubaUsername : env('MAIL_USERNAME'),
+            'password' => $usesAruba ? env('ARUBA_SMTP_PASSWORD') : env('MAIL_PASSWORD'),
             'timeout' => (int) env('MAIL_TIMEOUT', 30),
             'require_tls' => (bool) env('MAIL_REQUIRE_TLS', true),
             'local_domain' => env('MAIL_EHLO_DOMAIN', parse_url((string) env('APP_URL', 'http://localhost'), PHP_URL_HOST)),
@@ -112,8 +123,13 @@ return [
     */
 
     'from' => [
-        'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
-        'name' => env('MAIL_FROM_NAME', env('APP_DISPLAY_NAME', 'Vista Express 360')),
+        'address' => $usesAruba ? env('ARUBA_FROM_ADDRESS') : env('MAIL_FROM_ADDRESS', 'hello@example.com'),
+        'name' => $usesAruba ? env('ARUBA_FROM_NAME', env('APP_DISPLAY_NAME', 'Vista Express 360')) : env('MAIL_FROM_NAME', env('APP_DISPLAY_NAME', 'Vista Express 360')),
+    ],
+
+    'reply_to' => [
+        'address' => $usesAruba ? env('ARUBA_REPLY_TO_ADDRESS', env('ARUBA_FROM_ADDRESS')) : env('MAIL_REPLY_TO_ADDRESS'),
+        'name' => $usesAruba ? env('ARUBA_REPLY_TO_NAME', env('ARUBA_FROM_NAME', env('APP_DISPLAY_NAME', 'Vista Express 360'))) : env('MAIL_REPLY_TO_NAME', env('APP_DISPLAY_NAME', 'Vista Express 360')),
     ],
 
 ];
