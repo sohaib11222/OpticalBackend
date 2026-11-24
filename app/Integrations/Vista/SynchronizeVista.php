@@ -24,7 +24,7 @@ class SynchronizeVista
         $response = $client->send('GET', $checkpoint['kind'], array_filter(['after_id' => $checkpoint['after_id'], 'through_id' => $checkpoint['through_id']], fn ($v) => $v !== null), $connection);
         abort_unless(is_array($response['data'] ?? null) && count($response['data']) <= 100 && is_numeric($response['through_id'] ?? null), 502, 'Invalid Vista data page.');
         $allowed = match ($checkpoint['kind']) {
-            'products' => ['id', 'name', 'sku', 'product_type', 'category_id', 'description', 'price', 'stock_quantity', 'stock_status', 'images', 'is_active', 'is_approved', 'is_muted', 'frame_shape', 'frame_material', 'frame_color', 'gender', 'updated_at', 'deleted_at', 'currency', 'visible', 'variants', 'sizes'],
+            'products' => ['id', 'name', 'sku', 'model_code', 'product_type', 'category_id', 'description', 'price', 'stock_quantity', 'stock_status', 'images', 'is_active', 'is_approved', 'is_muted', 'frame_shape', 'frame_material', 'frame_color', 'gender', 'updated_at', 'deleted_at', 'currency', 'visible', 'variants', 'sizes'],
             'orders' => ['id', 'status', 'subtotal', 'delivery_fee', 'total', 'payment_status', 'created_at', 'updated_at', 'currency', 'order_number', 'customer_id', 'items'],
             'customers' => ['id', 'name', 'email', 'phone', 'updated_at'],
         };

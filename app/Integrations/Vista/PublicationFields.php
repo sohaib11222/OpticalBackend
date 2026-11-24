@@ -11,7 +11,7 @@ class PublicationFields
     public function validate(array $mapping, int $quantity, array $legacy = []): array
     {
         $meta = app(VistaClient::class)->send('GET', 'catalog-metadata', [], VistaConnection::firstOrFail())['data'] ?? [];
-        abort_unless(in_array(($meta['schema_version'] ?? 0), [2, 3], true), 409, 'Deploy the Vista category-form update before publishing.');
+        abort_unless(($meta['schema_version'] ?? 0) === 4, 409, 'Deploy the current Vista category-form update before publishing.');
         $category = collect($meta['categories'] ?? [])->firstWhere('id', $mapping['category_id'] ?? null);
         if (! $category || ! empty($category['parent_id']) || empty($category['product_type']) || $category['product_type'] !== ($mapping['product_type'] ?? null)) {
             throw ValidationException::withMessages(['mapping.category_id' => 'Select a compatible Vista category.']);
